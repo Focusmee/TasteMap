@@ -191,9 +191,10 @@ export const chatApi = {
 // 出行相关API
 export const travelApi = {
   // 获取天气信息
-  getWeather: (city) => {
+  getWeather: (params) => {
+    const query = typeof params === 'string' ? { city: params } : (params || {})
     return api.get('/travel/weather', {
-      params: { city }
+      params: query
     })
   },
 

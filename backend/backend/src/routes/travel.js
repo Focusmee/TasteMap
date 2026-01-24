@@ -6,16 +6,17 @@ const { verifyToken } = require('../utils/jwt')
 const router = new Router()
 
 // 高德地图API配置
-const AMAP_KEY = (process.env.AMAP_WEB_KEY || '62dcda7f84789a38e32f7e6c9f7f82bf').trim()
+const AMAP_KEY = (process.env.AMAP_WEB_KEY || '10fcc3a016894a3a745ba9b4417b5596').trim()
 const AMAP_GEOCODE_URL = 'https://restapi.amap.com/v3/geocode/geo' // 地理编码API
 const AMAP_WEATHER_URL = 'https://restapi.amap.com/v3/weather/weatherInfo' // 天气API
+const AMAP_REGEOCODE_URL = 'https://restapi.amap.com/v3/geocode/regeo' // 逆地理编码用于坐标转adcode
 const AMAP_PLACE_AROUND_URL = 'https://restapi.amap.com/v3/place/around' // 周边搜索API
 const AMAP_DIRECTION_BASE = 'https://restapi.amap.com/v5/direction' // 路线规划API基础地址
 
 /**
- * 通过地理编码API获取城市adcode
- * @param {string} cityName - 城市名称
- * @returns {string|null} adcode或null
+ * ??????API????adcode
+ * @param {string} cityName - ????
+ * @returns {string|null} adcode?null
  */
 const getCityAdcode = async (cityName) => {
     try {
@@ -29,18 +30,42 @@ const getCityAdcode = async (cityName) => {
         })
 
         if (response.data.status === '1' && response.data.geocodes && response.data.geocodes.length > 0) {
-            // 优先返回第一个结果的adcode
+            // ??????????adcode
             const adcode = response.data.geocodes[0].adcode
             return adcode
         }
         return null
     } catch (error) {
-        console.error('地理编码API调用错误:', error)
+        console.error('????API????:', error)
         return null
     }
 }
 
-// 获取天气信息
+/**
+ * ????????????adcode
+ * @param {string} location - "lng,lat"
+ * @returns {string|null} adcode?null
+ */
+const getAdcodeByLocation = async (location) => {
+    try {
+        const response = await axios.get(AMAP_REGEOCODE_URL, {
+            params: {
+                key: AMAP_KEY,
+                location,
+                output: 'JSON'
+            },
+            timeout: 5000
+        })
+
+        const addressComponent = response?.data?.regeocode?.addressComponent
+        const adcode = addressComponent?.adcode || addressComponent?.citycode || null
+        return adcode || null
+    } catch (error) {
+        console.error('???????????:', error)
+        return null
+    }
+}
+
 router.get('/weather', async (ctx) => {
     try {
         // 验证token
@@ -64,13 +89,13 @@ router.get('/weather', async (ctx) => {
             return
         }
 
-        const { city } = ctx.query
+        const { city, location } = ctx.query
 
-        if (!city) {
+        if (!city && !location) {
             ctx.status = 400
             ctx.body = {
                 success: false,
-                message: '城市名称不能为空'
+                message: 'city或location不能为空'
             }
             return
         }
@@ -78,14 +103,37 @@ router.get('/weather', async (ctx) => {
         // 第一步：通过地理编码API获取adcode
         let adcode = city
 
-        // 如果输入的不是纯数字（可能是城市名），先转换为adcode
-        if (isNaN(city)) {
+        // location优先，再根据城市名称获取adcode
+        if (location) {
+            const [lngStr, latStr] = String(location).split(',')
+            const lng = Number(lngStr)
+            const lat = Number(latStr)
+            if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+                ctx.status = 400
+                ctx.body = {
+                    success: false,
+                    message: 'location不正确，请使用lng,lat'
+                }
+                return
+            }
+            adcode = await getAdcodeByLocation(`${lng},${lat}`)
+        } else if (isNaN(city)) {
+            // 如果输入的不是纯数字，先转换为adcode
             adcode = await getCityAdcode(city)
             if (!adcode) {
-                // 如果无法获取adcode，尝试直接使用城市名查询（降级方案）
                 console.warn(`无法获取城市"${city}"的adcode，尝试使用城市名查询`)
             }
         }
+        if (location && !adcode) {
+            ctx.status = 400
+            ctx.body = {
+                success: false,
+                message: '??????????????'
+            }
+            return
+        }
+
+
 
         // 第二步：使用adcode或城市名查询天气
         const weatherParams = {
@@ -216,15 +264,20 @@ router.get('/nearby-restaurants', async (ctx) => {
         const mergedKeywords = [keyword, categoryConfig.keywords].filter(Boolean).join(' ').trim()
         const mergedTypes = [categoryConfig.types, '050000'].filter(Boolean).join('|')
 
+        const normalizedRadius = Math.min(Math.max(Number(radius) || 2000, 0), 50000)
         const params = {
             key: AMAP_KEY,
-            location: `${lng},${lat}`,
-            radius: Number(radius) || 2000,
-            keywords: mergedKeywords || '餐厅',
-            types: mergedTypes,
-            sortrule: sort === 'weight' ? 1 : 0,
+            location: `${lng.toFixed(6)},${lat.toFixed(6)}`,
+            radius: normalizedRadius,
+            types: mergedTypes || '050000',
+            sortrule: sort === 'weight' ? 'weight' : 'distance',
             page: Number(page) || 1,
-            offset: Math.min(Number(offset) || 20, 50)
+            offset: Math.min(Number(offset) || 20, 25),
+            extensions: 'all',
+            output: 'JSON'
+        }
+        if (mergedKeywords) {
+            params.keywords = mergedKeywords
         }
 
         const response = await axios.get(AMAP_PLACE_AROUND_URL, {
@@ -259,9 +312,10 @@ router.get('/nearby-restaurants', async (ctx) => {
             message: response.data.info || '获取附近餐厅失败'
         }
     } catch (error) {
-        console.error('获取附近餐厅错误:', error)
+        const info = error?.response?.data?.info || error?.message || 'Unknown error'
+        console.error('Nearby restaurants error:', info)
         ctx.status = 500
-        ctx.body = { success: false, message: '获取附近餐厅失败，请重试' }
+        ctx.body = { success: false, message: `Failed to fetch nearby restaurants: ${info}` }
     }
 })
 

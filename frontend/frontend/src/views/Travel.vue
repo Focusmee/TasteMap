@@ -168,6 +168,18 @@
                             </div>
                             <div class="rule-section">
                                 <div class="rule-title">天气出行建议</div>
+                                <div v-if="currentWeatherInfo" class="rule-current">
+                                    <div class="rule-current-title">当前位置天气</div>
+                                    <div class="rule-current-meta">
+                                        {{ currentWeatherInfo.weather }} · {{ currentWeatherInfo.temperature }}℃
+                                        <span v-if="currentWeatherInfo.winddir">
+                                            · {{ currentWeatherInfo.winddir }}风 {{ currentWeatherInfo.windpower }}级
+                                        </span>
+                                    </div>
+                                    <div v-if="currentWeatherInfo.tip" class="rule-current-tip">
+                                        {{ currentWeatherInfo.tip }}
+                                    </div>
+                                </div>
                                 <div v-if="weatherRecommendations.length" class="rule-tags">
                                     <el-tag v-for="item in weatherRecommendations" :key="item" type="info"
                                         effect="plain">
@@ -180,7 +192,7 @@
                                         推荐：{{ item.label }}
                                     </el-button>
                                 </div>
-                                <div v-if="!weatherInfo" class="rule-empty">先获取天气，再给出推荐规则</div>
+                                <div v-if="!weatherSource" class="rule-empty">先获取当前位置天气，再给出推荐规则</div>
                             </div>
                             <div class="restaurant-section">
                                 <div class="restaurant-title">附近餐厅</div>
@@ -211,6 +223,11 @@
                             <div class="route-section">
                                 <div class="route-title">路线规划</div>
                                 <div class="route-actions">
+
+                                    <div class="route-origin-toggle">
+                                        <span>以当前位置为起点</span>
+                                        <el-switch v-model="useCurrentLocationAsOrigin" size="small" />
+                                    </div>
                                     <el-button size="small" type="primary" @click="planRestaurantRoute"
                                         :disabled="selectedStops.length === 0">
                                         规划路线
@@ -245,6 +262,53 @@
                 </el-card>
 
                 <!-- 路线信息 -->
+                
+                <el-card class="route-segment-panel" shadow="never" v-if="routePointList.length">
+                    <template #header>
+                        <div class="route-segment-header">
+                            <span>路线点位</span>
+                        </div>
+                    </template>
+                    <div class="route-flow">
+                        <div v-for="(point, index) in routePointList" :key="point.id" class="route-flow-point">
+                            <div class="route-point-item">
+                                <div class="route-point-index">{{ index + 1 }}</div>
+                                <div class="route-point-info">
+                                    <div class="route-point-name">{{ point.name }}</div>
+                                    <div class="route-point-address" v-if="point.address">{{ point.address }}</div>
+                                </div>
+                            </div>
+
+                            <div v-if="routeSegments[index]" class="route-flow-segment">
+                                <div class="route-segment-title">分段路线（点击展开步骤）</div>
+                                <el-collapse v-model="activeSegmentKeys" accordion>
+                                    <el-collapse-item :key="routeSegments[index].key" :name="routeSegments[index].key">
+                                        <template #title>
+                                            <span>{{ routeSegments[index].fromName }} -> {{ routeSegments[index].toName }}</span>
+                                            <span class="route-segment-meta">{{ formatDistance(routeSegments[index].distance) }} / {{ formatDuration(routeSegments[index].duration) }}</span>
+                                        </template>
+                                        <div class="route-segment-steps">
+                                            <div v-if="routeSegments[index].steps.length" class="route-segment-step" v-for="(step, idx) in routeSegments[index].steps" :key="idx">
+                                                <span class="route-segment-step-index">{{ idx + 1 }}</span>
+                                                <div class="route-segment-step-text">
+                                                    <div class="route-segment-step-main">{{ step.instruction }}</div>
+                                                    <div class="route-segment-step-meta">
+                                                        <span v-if="step.road_name">道路：{{ step.road_name }}</span>
+                                                        <span v-if="step.orientation">方向：{{ step.orientation }}</span>
+                                                        <span v-if="step.step_distance">距离：{{ formatDistance(step.step_distance) }}</span>
+                                                        <span v-if="step.duration">耗时：{{ formatDuration(step.duration) }}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div v-else class="route-segment-empty">暂无分段步骤</div>
+                                        </div>
+                                    </el-collapse-item>
+                                </el-collapse>
+                            </div>
+                        </div>
+                    </div>
+                </el-card>
+
                 <el-card v-if="routeInfo" class="info-card" shadow="never">
                     <template #header>
                         <div class="route-header">
@@ -313,6 +377,7 @@ const saving = ref(false)
 const routeType = ref('driving')
 const currentLocation = ref(null)
 const weatherInfo = ref(null)
+const currentWeatherInfo = ref(null)
 const routeInfo = ref(null)
 const recommendationInfo = ref(null)
 const showAllSteps = ref(false) // 控制是否展开所有路线步骤
@@ -325,11 +390,19 @@ const sortRule = ref('distance')
 const selectedStops = ref([])
 const markingMode = ref(false)
 const routePlanned = ref(false)
+const useCurrentLocationAsOrigin = ref(true)
+const routeSegments = ref([])
+const activeSegmentKeys = ref([])
 const searchRadius = ref(2000)
 let mapInstance = null
 let mapInfoWindow = null
 let drivingInstance = null
 let geocoderInstance = null
+let routeLine = null
+let lastRoutePoints = null
+let markerOverlays = []
+let mapSearchTimer = null
+let suppressMapSearchUntil = 0
 
 const restaurantCategories = [
     { label: '全部', value: '' },
@@ -348,15 +421,17 @@ const travelPlanComplete = computed(() => {
     return weatherInfo.value && routeInfo.value
 })
 
+const weatherSource = computed(() => currentWeatherInfo.value || weatherInfo.value)
+
 const weatherRecommendations = computed(() => {
-    if (!weatherInfo.value) {
+    if (!weatherSource.value) {
         return []
     }
     const tips = []
-    const weatherText = weatherInfo.value.weather || ''
-    const temperature = Number(weatherInfo.value.temperature)
+    const weatherText = weatherSource.value.weather || ''
+    const temperature = Number(weatherSource.value.temperature)
 
-    if (weatherInfo.value.icon === 'rainy' || weatherText.includes('雨')) {
+    if (weatherSource.value.icon === 'rainy' || weatherText.includes('雨')) {
         tips.push('下雨优先选择室内餐厅')
     }
     if (Number.isFinite(temperature) && temperature > 30) {
@@ -372,14 +447,14 @@ const weatherRecommendations = computed(() => {
 })
 
 const recommendedCategories = computed(() => {
-    if (!weatherInfo.value) {
+    if (!weatherSource.value) {
         return []
     }
-    const weatherText = weatherInfo.value.weather || ''
-    const temperature = Number(weatherInfo.value.temperature)
+    const weatherText = weatherSource.value.weather || ''
+    const temperature = Number(weatherSource.value.temperature)
     const categories = []
 
-    if (weatherInfo.value.icon === 'rainy' || weatherText.includes('雨')) {
+    if (weatherSource.value.icon === 'rainy' || weatherText.includes('雨')) {
         categories.push({ label: '室内餐厅', value: 'indoor' })
     }
     if (Number.isFinite(temperature) && temperature > 30) {
@@ -439,6 +514,20 @@ const formatDistance = (distance) => {
     }
 }
 
+// 格式化时长
+const formatDuration = (duration) => {
+    const dur = parseInt(duration)
+    if (dur < 60) {
+        return `${dur}秒`
+    } else if (dur < 3600) {
+        return `${Math.floor(dur / 60)}分钟`
+    } else {
+        const hours = Math.floor(dur / 3600)
+        const minutes = Math.floor((dur % 3600) / 60)
+        return `${hours}小时${minutes}分钟`
+    }
+}
+
 const waitForAMap = (timeout = 5000) => {
     return new Promise((resolve, reject) => {
         const start = Date.now()
@@ -495,6 +584,155 @@ const toLngLat = (coord) => {
     return new AMap.LngLat(lng, lat)
 }
 
+const parsePolyline = (polyline) => {
+    if (!polyline || typeof polyline !== 'string') return []
+    return polyline
+        .split(';')
+        .map(parseLocation)
+        .filter(Boolean)
+        .map(([lng, lat]) => new AMap.LngLat(lng, lat))
+}
+
+
+const markerIconCache = new Map()
+const buildCircleSvg = (color) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="${color}" stroke="#ffffff" stroke-width="2"/></svg>`
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+const getCircleIcon = (color) => {
+    if (markerIconCache.has(color)) return markerIconCache.get(color)
+    const icon = new AMap.Icon({
+        size: new AMap.Size(24, 24),
+        image: buildCircleSvg(color),
+        imageSize: new AMap.Size(24, 24)
+    })
+    markerIconCache.set(color, icon)
+    return icon
+}
+
+const clearRouteOverlay = () => {
+    if (drivingInstance) {
+        drivingInstance.clear()
+    }
+    if (routeLine && mapInstance) {
+        mapInstance.remove(routeLine)
+    }
+    routeLine = null
+    lastRoutePoints = null
+    routePlanned.value = false
+    routeSegments.value = []
+        activeSegmentKeys.value = []
+}
+
+const collectBackendRoutePoints = (routeData) => {
+    const path = routeData?.route?.paths?.[0]
+    if (!path || !Array.isArray(path.steps)) {
+        throw new Error('Backend route data is incomplete')
+    }
+    const points = path.steps.flatMap(step => parsePolyline(step.polyline || ''))
+    if (points.length === 0) {
+        throw new Error('Route points are empty')
+    }
+    return points
+}
+
+const drawRouteFromPoints = (points) => {
+    if (!points || points.length === 0) {
+        throw new Error('Route points are empty')
+    }
+    lastRoutePoints = points
+    routeLine = new AMap.Polyline({
+        path: points,
+        strokeColor: '#409EFF',
+        strokeWeight: 6,
+        strokeOpacity: 0.85
+    })
+    mapInstance.add(routeLine)
+    mapInstance.setFitView([routeLine], false, [40, 40, 40, 40])
+    routePlanned.value = true
+}
+
+const drawRouteFromBackend = (routeData) => {
+    const points = collectBackendRoutePoints(routeData)
+    drawRouteFromPoints(points)
+}
+
+const toRadians = (value) => (value * Math.PI) / 180
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const calcDistanceMeters = (lng1, lat1, lng2, lat2) => {
+    const earthRadius = 6371000
+    const dLat = toRadians(lat2 - lat1)
+    const dLng = toRadians(lng2 - lng1)
+    const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLng / 2) ** 2
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    return earthRadius * c
+}
+
+const getRadiusFromMap = () => {
+    if (!mapInstance) return null
+    const bounds = mapInstance.getBounds?.()
+    const center = mapInstance.getCenter?.()
+    if (!bounds || !center) return null
+    const northeast = bounds.getNorthEast?.()
+    if (!northeast) return null
+    const radius = calcDistanceMeters(
+        center.getLng(),
+        center.getLat(),
+        northeast.getLng(),
+        northeast.getLat()
+    )
+    if (!Number.isFinite(radius)) return null
+    return clamp(Math.round(radius), 300, 50000)
+}
+
+const getEffectiveRadius = () => {
+    const mapRadius = getRadiusFromMap()
+    return Number.isFinite(mapRadius) ? mapRadius : searchRadius.value
+}
+
+
+const routePointList = computed(() => {
+    const points = []
+    if (useCurrentLocationAsOrigin.value && currentLocation.value) {
+        points.push({
+            id: 'origin',
+            name: '当前位置',
+            address: currentLocation.value.address || ''
+        })
+    }
+    selectedStops.value.forEach((stop) => {
+        points.push({
+            id: stop.id,
+            name: stop.name,
+            address: stop.address || ''
+        })
+    })
+    return points
+})
+
+const scheduleMapNearbyRefresh = (radius) => {
+    if (mapSearchTimer) {
+        clearTimeout(mapSearchTimer)
+    }
+    mapSearchTimer = setTimeout(() => {
+        loadNearbyRestaurants(radius, { preserveRoute: true, preserveView: true })
+    }, 500)
+}
+
+const handleMapViewChange = () => {
+    if (!mapInstance) return
+    const now = Date.now()
+    if (now < suppressMapSearchUntil) {
+        return
+    }
+    const radius = getRadiusFromMap()
+    if (!radius) return
+    scheduleMapNearbyRefresh(radius)
+}
+
 const ensureMap = async (location) => {
     if (!mapContainer.value || !location) return
     await waitForAMap()
@@ -512,6 +750,8 @@ const ensureMap = async (location) => {
             offset: new AMap.Pixel(0, -28)
         })
         mapInstance.on('click', handleMapClick)
+        mapInstance.on('moveend', handleMapViewChange)
+        mapInstance.on('zoomend', handleMapViewChange)
 
         AMap.plugin(['AMap.ToolBar', 'AMap.Scale', 'AMap.MapType'], () => {
             mapInstance.addControl(new AMap.ToolBar())
@@ -520,7 +760,11 @@ const ensureMap = async (location) => {
                 defaultType: 0
             }))
         })
+        setTimeout(() => {
+            handleMapViewChange()
+        }, 0)
     } else {
+        suppressMapSearchUntil = Date.now() + 600
         mapInstance.setCenter(center)
     }
 }
@@ -576,29 +820,50 @@ const ensureDriving = async () => {
     })
 }
 
-const updateMapMarkers = (location, restaurants) => {
+const updateMapMarkers = (location, restaurants, options = {}) => {
     if (!mapInstance || !location) return
-    mapInstance.clearMap()
-    if (drivingInstance) {
-        drivingInstance.clear()
-        routePlanned.value = false
+    const { preserveRoute = false, preserveView = false } = options
+
+    const stopIndexById = new Map(selectedStops.value.map((stop, index) => [stop.id, index + 1]))
+    const selectedIdSet = new Set(selectedStops.value.map(stop => stop.id))
+    const plannedHighlight = routePlanned.value
+    const markerColors = {
+        default: '#2f74ff',
+        selected: '#f59e0b',
+        planned: '#22c55e',
+        current: '#ef4444'
+    }
+
+    if (markerOverlays.length > 0) {
+        mapInstance.remove(markerOverlays)
+        markerOverlays = []
+    }
+    if (!preserveRoute) {
+        clearRouteOverlay()
     }
 
     const center = [location.lng, location.lat]
     const userMarker = new AMap.Marker({
         position: center,
-        title: '当前位置',
-        anchor: 'bottom-center'
+        title: 'Current location',
+        anchor: 'bottom-center',
+        icon: getCircleIcon(markerColors.current)
     })
+    markerOverlays.push(userMarker)
     mapInstance.add(userMarker)
 
     const markers = (restaurants || [])
         .map((rest) => {
             const loc = parseLocation(rest.location)
             if (!loc) return null
+            const stopIndex = stopIndexById.get(rest.id)
             const marker = new AMap.Marker({
                 position: loc,
-                title: rest.name
+                title: rest.name,
+                label: stopIndex ? { content: String(stopIndex), direction: 'top' } : undefined,
+                icon: selectedIdSet.has(rest.id)
+                    ? getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
+                    : getCircleIcon(markerColors.default)
             })
             marker.on('click', () => {
                 if (!mapInfoWindow) return
@@ -621,23 +886,37 @@ const updateMapMarkers = (location, restaurants) => {
         .map((stop) => {
             const loc = parseLocation(stop.location)
             if (!loc) return null
+            const stopIndex = stopIndexById.get(stop.id)
             return new AMap.Marker({
                 position: loc,
                 title: stop.name,
-                label: {
+                label: stopIndex ? { content: String(stopIndex), direction: 'top' } : {
                     content: stop.name,
                     direction: 'top'
-                }
+                },
+                icon: getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
             })
         })
         .filter(Boolean)
 
     const allMarkers = markers.concat(customMarkers)
     if (allMarkers.length > 0) {
+        markerOverlays.push(...allMarkers)
         mapInstance.add(allMarkers)
-        mapInstance.setFitView([userMarker, ...allMarkers], false, [40, 40, 40, 40])
-    } else {
+        suppressMapSearchUntil = Date.now() + 600
+        if (!preserveView) {
+            mapInstance.setFitView([userMarker, ...allMarkers], false, [40, 40, 40, 40])
+        }
+    } else if (!preserveView) {
         mapInstance.setZoom(13)
+    }
+
+    if (preserveRoute && !routeLine && lastRoutePoints?.length) {
+        try {
+            drawRouteFromPoints(lastRoutePoints)
+        } catch (error) {
+            console.warn('Restore route failed:', error)
+        }
     }
 }
 
@@ -651,6 +930,25 @@ const getWeatherIcon = (iconType) => {
         'windy': '💨'
     }
     return iconMap[iconType] || '🌤️'
+}
+
+// 获取当前位置天气
+const loadCurrentWeather = async (location) => {
+    if (!location?.lng || !location?.lat) {
+        return
+    }
+    try {
+        const res = await travelApi.getWeather({
+            location: formatLocation(location.lng, location.lat)
+        })
+        if (res.success) {
+            currentWeatherInfo.value = res.data
+        } else {
+            console.warn(res.message || '获取当前位置天气失败')
+        }
+    } catch (error) {
+        console.warn('获取当前位置天气失败:', error)
+    }
 }
 
 // 提取城市名称
@@ -696,14 +994,16 @@ const parseRouteResult = (data, type) => {
                     if (segment.walking) {
                         result.steps.push({
                             instruction: `步行${formatDistance(segment.walking.distance)}`,
-                            step_distance: segment.walking.distance
+                            step_distance: segment.walking.distance,
+                            duration: segment.walking.duration || ''
                         })
                     }
                     if (segment.bus && segment.bus.buslines && segment.bus.buslines.length > 0) {
                         const busline = segment.bus.buslines[0]
                         result.steps.push({
                             instruction: `乘坐${busline.name}，${busline.departure_stop.name} → ${busline.arrival_stop.name}`,
-                            step_distance: busline.distance
+                            step_distance: busline.distance,
+                            duration: busline.duration || ''
                         })
                     }
                 })
@@ -722,7 +1022,8 @@ const parseRouteResult = (data, type) => {
                     instruction: step.instruction || '',
                     road_name: step.road || '',
                     step_distance: step.distance || '0',
-                    orientation: step.orientation || ''
+                    orientation: step.orientation || '',
+                    duration: step.duration || ''
                 }))
             }
         }
@@ -742,6 +1043,10 @@ const getLocation = async () => {
             }
         }
         currentLocation.value = location
+        loadCurrentWeather(location)
+        ensureMap(location).then(() => {
+            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
+        }).catch(() => { })
         return formatLocation(location.lng, location.lat)
     } catch (error) {
         console.error('获取位置失败:', error)
@@ -751,6 +1056,10 @@ const getLocation = async () => {
             lat: 39.90923,
             address: '默认位置'
         }
+        loadCurrentWeather(currentLocation.value)
+        ensureMap(currentLocation.value).then(() => {
+            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
+        }).catch(() => { })
         return '116.397428,39.90923'
     }
 }
@@ -816,8 +1125,8 @@ const removeStop = (stopId) => {
 }
 
 const planRestaurantRoute = async () => {
-    if (!currentLocation.value) {
-        ElMessage.warning('请先获取当前位置')
+    if (!currentLocation.value && useCurrentLocationAsOrigin.value) {
+        ElMessage.warning('Please get current location first')
         return
     }
     const validStops = selectedStops.value
@@ -825,45 +1134,89 @@ const planRestaurantRoute = async () => {
         .filter((stop) => stop.coord)
 
     if (validStops.length === 0) {
-        ElMessage.warning('请先选择或标记餐厅')
+        ElMessage.warning('Please select or mark at least one place')
+        return
+    }
+    if (validStops.length > 16) {
+        ElMessage.warning('At most 16 waypoints are supported')
+        return
+    }
+    if (!useCurrentLocationAsOrigin.value && validStops.length < 2) {
+        ElMessage.warning('Please select at least two places when not using current location as origin')
         return
     }
 
     try {
-        await ensureMap(currentLocation.value)
-        await ensureDriving()
-        const origin = toLngLat([currentLocation.value.lng, currentLocation.value.lat])
-        const destination = toLngLat(validStops[validStops.length - 1].coord)
-        const waypoints = validStops.length > 1
-            ? validStops.slice(0, -1).map((stop) => toLngLat(stop.coord)).filter(Boolean)
-            : []
+        await ensureMap(currentLocation.value || validStops[0])
+        clearRouteOverlay()
 
-        if (!origin || !destination) {
-            ElMessage.error('路线坐标无效')
+        const stopLocations = validStops
+            .map((stop) => formatLocation(stop.coord[0], stop.coord[1]))
+            .filter(Boolean)
+
+        let segmentStart = null
+        let startName = ''
+        let stopsForSegments = [...validStops]
+        if (useCurrentLocationAsOrigin.value) {
+            segmentStart = formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+            startName = currentLocation.value.address || 'Current location'
+        } else {
+            segmentStart = stopLocations.shift()
+            const firstStop = stopsForSegments.shift()
+            startName = firstStop?.name || 'Start'
+        }
+
+        if (!segmentStart || stopLocations.length === 0) {
+            ElMessage.error('Invalid route coordinates')
             return
         }
 
-        drivingInstance.search(origin, destination, { waypoints }, (status, result) => {
-            if (status === 'complete') {
-                routePlanned.value = true
-            } else {
-                const info = result?.info ? `，${result.info}` : ''
-                ElMessage.error(`路线规划失败${info}`)
+        const allPoints = []
+        const segments = []
+        let segmentFromName = startName
+        for (let i = 0; i < stopLocations.length; i += 1) {
+            const segmentEnd = stopLocations[i]
+            const stopMeta = stopsForSegments[i]
+            const routeRes = await travelApi.getRoute('driving', segmentStart, segmentEnd, '')
+            if (!routeRes.success) {
+                ElMessage.error(routeRes.message || 'Backend route planning failed')
+                return
             }
-        })
+            const segmentPoints = collectBackendRoutePoints(routeRes.data)
+            if (allPoints.length > 0 && segmentPoints.length > 0) {
+                segmentPoints.shift()
+            }
+            allPoints.push(...segmentPoints)
+
+            const parsed = parseRouteResult(routeRes.data, 'driving')
+            segments.push({
+                key: `${segmentFromName}-${stopMeta?.name || 'Stop'}`,
+                fromName: segmentFromName,
+                toName: stopMeta?.name || 'Stop',
+                distance: parsed.distance || '0',
+                duration: parsed.duration || '0',
+                steps: parsed.steps || []
+            })
+
+            segmentStart = segmentEnd
+            segmentFromName = stopMeta?.name || 'Stop'
+        }
+
+        routeSegments.value = segments
+                activeSegmentKeys.value = segments.length ? [segments[0].key] : []
+        drawRouteFromPoints(allPoints)
+        updateMapMarkers(currentLocation.value || validStops[0], nearbyRestaurants.value, { preserveRoute: true, preserveView: true })
     } catch (error) {
-        ElMessage.error(error.message || '路线规划失败')
+        ElMessage.error(error.message || 'Backend route planning failed')
     }
 }
+
 
 const clearPlannedRoute = () => {
-    if (drivingInstance) {
-        drivingInstance.clear()
-    }
-    routePlanned.value = false
+    clearRouteOverlay()
 }
 
-const loadNearbyRestaurants = async () => {
+const loadNearbyRestaurants = async (radiusOverride = null, options = {}) => {
     if (!currentLocation.value) {
         await getLocation()
         if (!currentLocation.value) {
@@ -875,9 +1228,10 @@ const loadNearbyRestaurants = async () => {
     try {
         await ensureMap(currentLocation.value)
         const location = formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+        const radiusValue = Number.isFinite(radiusOverride) ? radiusOverride : getEffectiveRadius()
         const params = {
             location,
-            radius: searchRadius.value,
+            radius: radiusValue,
             category: selectedCategory.value,
             keyword: restaurantKeyword.value,
             sort: sortRule.value
@@ -885,13 +1239,15 @@ const loadNearbyRestaurants = async () => {
         const res = await travelApi.getNearbyRestaurants(params)
         if (res.success) {
             nearbyRestaurants.value = res.data.list || []
-            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
+            updateMapMarkers(currentLocation.value, nearbyRestaurants.value, options)
         } else {
             ElMessage.warning(res.message || '获取附近餐厅失败')
+            updateMapMarkers(currentLocation.value, [], options)
         }
     } catch (error) {
         ElMessage.error(error.message || '获取附近餐厅失败')
         console.error('Nearby restaurants error:', error)
+        updateMapMarkers(currentLocation.value, [], options)
     } finally {
         loadingRestaurants.value = false
     }
@@ -1161,23 +1517,49 @@ onMounted(async () => {
                 align-items: center;
             }
 
-            .rule-section {
-                border: 1px solid #f0f0f0;
-                border-radius: 12px;
-                padding: 12px;
-                background: #fafafa;
+                .rule-section {
+                    border: 1px solid #f0f0f0;
+                    border-radius: 12px;
+                    padding: 12px;
+                    background: #fafafa;
 
-                .rule-title {
-                    font-weight: 600;
-                    color: $text-primary;
-                    margin-bottom: 8px;
-                }
+                    .rule-title {
+                        font-weight: 600;
+                        color: $text-primary;
+                        margin-bottom: 8px;
+                    }
 
-                .rule-tags {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 8px;
-                }
+                    .rule-current {
+                        padding: 8px 10px;
+                        border-radius: 10px;
+                        background: #fff;
+                        border: 1px solid #f0f0f0;
+                        margin-bottom: 8px;
+                    }
+
+                    .rule-current-title {
+                        font-size: 13px;
+                        color: $text-secondary;
+                        margin-bottom: 4px;
+                    }
+
+                    .rule-current-meta {
+                        font-weight: 600;
+                        color: $text-primary;
+                        font-size: 14px;
+                    }
+
+                    .rule-current-tip {
+                        margin-top: 4px;
+                        font-size: 12px;
+                        color: $primary-color;
+                    }
+
+                    .rule-tags {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 8px;
+                    }
 
                 .rule-actions {
                     margin-top: 8px;
@@ -1470,4 +1852,125 @@ onMounted(async () => {
         }
     }
 }
+
+.route-origin-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: auto;
+}
+.route-segment-panel {
+    margin-top: 16px;
+}
+.route-point-list {
+    display: grid;
+    gap: 10px;
+}
+.route-flow {
+    display: grid;
+    gap: 14px;
+}
+.route-flow-point {
+    display: grid;
+    gap: 10px;
+}
+.route-point-item {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, rgba(59, 130, 246, 0.08), rgba(255, 255, 255, 1));
+    border: 1px solid #e5e7eb;
+}
+.route-point-index {
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    background: #111827;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    box-shadow: 0 6px 12px rgba(15, 23, 42, 0.18);
+}
+.route-point-name {
+    font-weight: 600;
+}
+.route-point-address {
+    color: #6b7280;
+    font-size: 12px;
+}
+.route-flow-segment {
+    position: relative;
+    padding-left: 18px;
+}
+.route-flow-segment::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: -6px;
+    bottom: -6px;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0), rgba(59, 130, 246, 0.45), rgba(59, 130, 246, 0));
+}
+.route-segment-title {
+    margin-top: 4px;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #111827;
+}
+.route-segment-meta {
+    margin-left: 10px;
+    color: #6b7280;
+    font-size: 12px;
+}
+.route-segment-steps {
+    display: grid;
+    gap: 6px;
+    padding: 6px 0;
+}
+.route-segment-step {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 13px;
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: #f9fafb;
+    border: 1px solid #eef2f7;
+}
+.route-segment-step-index {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: #e5e7eb;
+    color: #111827;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+}
+.route-segment-step-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.route-segment-step-main {
+    color: #111827;
+    line-height: 1.4;
+}
+.route-segment-step-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: #6b7280;
+    font-size: 12px;
+}
+.route-segment-empty {
+    color: #9ca3af;
+    font-size: 12px;
+}
+
 </style>
