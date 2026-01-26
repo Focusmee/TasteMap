@@ -20,7 +20,7 @@ router.get('/', async (ctx) => {
   }
 
   const [rows] = await pool.execute(
-    'SELECT id, profile_json, health_score, update_time FROM user_profile WHERE user_id = ? LIMIT 1',
+    'SELECT id, profile, health_score, update_time FROM user_profile WHERE user_id = ? LIMIT 1',
     [decoded.userId]
   )
 
@@ -45,7 +45,7 @@ router.get('/', async (ctx) => {
     success: true,
     data: {
       id: row.id,
-      profile: typeof row.profile_json === 'string' ? JSON.parse(row.profile_json) : row.profile_json,
+      profile: typeof row.profile === 'string' ? JSON.parse(row.profile) : row.profile,
       health_score: row.health_score,
       update_time: row.update_time
     }
@@ -61,7 +61,8 @@ router.post('/', async (ctx) => {
     return
   }
 
-  const profile = ctx.request.body?.profile
+  const body = ctx.request.body || {}
+  const profile = body.profile ?? body
   if (!profile) {
     ctx.status = 400
     ctx.body = { success: false, message: '缺少 profile' }
@@ -77,9 +78,9 @@ router.post('/', async (ctx) => {
   score = Math.max(0, Math.min(100, score))
 
   await pool.execute(
-    `INSERT INTO user_profile (user_id, profile_json, health_score)
+    `INSERT INTO user_profile (user_id, profile, health_score)
      VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE profile_json = VALUES(profile_json), health_score = VALUES(health_score)`,
+     ON DUPLICATE KEY UPDATE profile = VALUES(profile), health_score = VALUES(health_score)`,
     [decoded.userId, JSON.stringify(profile), score]
   )
 
@@ -98,16 +99,16 @@ router.get('/overview', async (ctx) => {
   const userId = decoded.userId
 
   const [[p]] = await pool.execute(
-    'SELECT health_score, profile_json FROM user_profile WHERE user_id = ? LIMIT 1',
+    'SELECT health_score, profile FROM user_profile WHERE user_id = ? LIMIT 1',
     [userId]
   )
 
   const [[diet]] = await pool.execute(
     `SELECT 
         IFNULL(SUM(calories),0) AS total_calories,
-        IFNULL(SUM(protein),0) AS total_protein,
-        IFNULL(SUM(fat),0) AS total_fat,
-        IFNULL(SUM(carbs),0) AS total_carbs
+        IFNULL(SUM(COALESCE(JSON_EXTRACT(nutrition, '$.protein_g'), JSON_EXTRACT(nutrition, '$.protein'), 0) + 0),0) AS total_protein,
+        IFNULL(SUM(COALESCE(JSON_EXTRACT(nutrition, '$.fat_g'), JSON_EXTRACT(nutrition, '$.fat'), 0) + 0),0) AS total_fat,
+        IFNULL(SUM(COALESCE(JSON_EXTRACT(nutrition, '$.carb_g'), JSON_EXTRACT(nutrition, '$.carbs'), JSON_EXTRACT(nutrition, '$.carbohydrate_g'), 0) + 0),0) AS total_carbs
      FROM diet_log 
      WHERE user_id = ? AND log_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`,
     [userId]
@@ -117,7 +118,7 @@ router.get('/overview', async (ctx) => {
     success: true,
     data: {
       health_score: p?.health_score ?? 70,
-      profile: p?.profile_json ? (typeof p.profile_json === 'string' ? JSON.parse(p.profile_json) : p.profile_json) : null,
+      profile: p?.profile ? (typeof p.profile === 'string' ? JSON.parse(p.profile) : p.profile) : null,
       last7: diet
     }
   }

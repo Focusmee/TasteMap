@@ -30,55 +30,12 @@ const buildCalorieRange = (calories) => {
   if (!base) return { min: null, max: null, label: '-' }
   const min = Math.max(0, Math.round(base * 0.9))
   const max = Math.max(min, Math.round(base * 1.1))
-  return { min, max, label: `${min}-${max} kcal/100g` }
+  return { min, max, label: `${min}-${max} \u5343\u5361/\u0031\u0030\u0030\u514b` }
 }
 
-const deriveSuitability = ({ calories, protein, fat, sugar, sodium, tags = [] }) => {
-  const suitable = new Set()
-  const unsuitable = new Set()
-
-  if (calories != null) {
-    if (calories <= 350) suitable.add('减脂')
-    if (calories >= 500) unsuitable.add('减脂')
-  }
-
-  if (protein != null) {
-    if (protein >= 20) suitable.add('增肌')
-  }
-
-  if (fat != null) {
-    if (fat <= 12) suitable.add('低脂')
-    if (fat >= 25) unsuitable.add('低脂')
-  }
-
-  if (sugar != null) {
-    if (sugar <= 10) suitable.add('控糖')
-    if (sugar >= 15) unsuitable.add('控糖')
-  }
-
-  if (sodium != null) {
-    if (sodium <= 600) suitable.add('低盐')
-    if (sodium >= 800) unsuitable.add('低盐')
-  }
-
-  for (const tag of tags) {
-    if (typeof tag !== 'string') continue
-    if (tag.includes('低脂')) suitable.add('低脂')
-    if (tag.includes('高蛋白')) suitable.add('增肌')
-    if (tag.includes('低糖')) suitable.add('控糖')
-    if (tag.includes('高糖')) unsuitable.add('控糖')
-    if (tag.includes('高盐')) unsuitable.add('低盐')
-    if (tag.includes('高脂')) unsuitable.add('低脂')
-  }
-
-  for (const label of suitable) {
-    if (unsuitable.has(label)) suitable.delete(label)
-  }
-
-  return {
-    suitable_for: Array.from(suitable),
-    unsuitable_for: Array.from(unsuitable)
-  }
+const normalizeTag = (value) => {
+  if (typeof value !== 'string') return ''
+  return value.trim().toLowerCase().replace(/\s+/g, '_').replace(/-+/g, '_')
 }
 
 const normalizeFoodRow = (row) => {
@@ -86,8 +43,8 @@ const normalizeFoodRow = (row) => {
   const nutrition = rawNutrition && typeof rawNutrition === 'object' && !Array.isArray(rawNutrition)
     ? rawNutrition
     : {}
-  const allergens = normalizeStringArray(parseJson(row.allergens, []))
-  const tags = normalizeStringArray(parseJson(row.tags, []))
+  const allergens = normalizeStringArray(parseJson(row.allergens, [])).map(normalizeTag).filter(Boolean)
+  const tags = normalizeStringArray(parseJson(row.tags, [])).map(normalizeTag).filter(Boolean)
   const protein = pickNumber(nutrition.protein_g ?? nutrition.protein)
   const fat = pickNumber(nutrition.fat_g ?? nutrition.fat)
   const carbs = pickNumber(nutrition.carb_g ?? nutrition.carbs ?? nutrition.carbohydrate_g)
@@ -95,14 +52,8 @@ const normalizeFoodRow = (row) => {
   const sugar = pickNumber(nutrition.sugar_g ?? nutrition.sugar)
   const fiber = pickNumber(nutrition.fiber_g ?? nutrition.fiber)
   const calorieRange = buildCalorieRange(row.calories)
-  const suitability = deriveSuitability({
-    calories: pickNumber(row.calories),
-    protein,
-    fat,
-    sugar,
-    sodium,
-    tags
-  })
+  const ingredients = parseJson(row.ingredients, [])
+  const riskFlags = parseJson(row.risk_flags, [])
 
   return {
     ...row,
@@ -115,14 +66,19 @@ const normalizeFoodRow = (row) => {
     sodium,
     sugar,
     fiber,
+    serving_size_g: row.serving_size_g ?? 100,
+    serving_unit: row.serving_unit ?? '\u514b',
+    cook_method: row.cook_method || '',
+    ingredients: Array.isArray(ingredients) ? ingredients : [],
+    risk_flags: Array.isArray(riskFlags) ? riskFlags : [],
+    source: row.source || '',
+    update_time: row.update_time || null,
     calorie_min: calorieRange.min,
     calorie_max: calorieRange.max,
-    calorie_range: calorieRange.label,
-    ...suitability
+    calorie_range: calorieRange.label
   }
 }
 
-// 知识库分类元信息
 router.get('/meta', async (ctx) => {
   const [rows] = await pool.execute(
     'SELECT DISTINCT category FROM food_knowledge WHERE category IS NOT NULL AND category <> "" ORDER BY category ASC'
@@ -130,7 +86,6 @@ router.get('/meta', async (ctx) => {
   ctx.body = { success: true, data: { categories: rows.map(r => r.category) } }
 })
 
-// 列表查询
 router.get('/list', async (ctx) => {
   const {
     keyword = '',
@@ -173,7 +128,8 @@ router.get('/list', async (ctx) => {
 
   const [[c]] = await pool.execute(`SELECT COUNT(*) AS total FROM food_knowledge ${where}`, params)
   const [rows] = await pool.execute(
-    `SELECT id, name, category, calories, nutrition, allergens, tags, image_url, description
+    `SELECT id, name, category, calories, nutrition, allergens, tags, image_url, description,
+            serving_size_g, serving_unit, cook_method, ingredients, risk_flags, source, update_time
      FROM food_knowledge
      ${where}
      ORDER BY calories ASC, id DESC
@@ -184,7 +140,6 @@ router.get('/list', async (ctx) => {
   ctx.body = { success: true, data: { total: c.total, list: rows.map(normalizeFoodRow) } }
 })
 
-// 联想
 router.get('/suggest', async (ctx) => {
   const q = String(ctx.query.q || ctx.query.keyword || '')
   if (!q) {
@@ -203,30 +158,30 @@ router.get('/:id', async (ctx) => {
   const [rows] = await pool.execute('SELECT * FROM food_knowledge WHERE id = ? LIMIT 1', [id])
   if (rows.length === 0) {
     ctx.status = 404
-    ctx.body = { success: false, message: '未找到' }
+    ctx.body = { success: false, message: '\u672a\u627e\u5230' }
     return
   }
   const row = normalizeFoodRow(rows[0])
   ctx.body = { success: true, data: row }
 })
 
-// 对比 2-3 个菜
 router.post('/compare', async (ctx) => {
   const ids = ctx.request.body?.ids
   if (!Array.isArray(ids) || ids.length < 2) {
     ctx.status = 400
-    ctx.body = { success: false, message: 'ids 需要至少2个' }
+    ctx.body = { success: false, message: '\u53c2\u6570\u9700\u8981\u81f3\u5c11\u4e24\u4e2a' }
     return
   }
   const use = ids.slice(0, 3).map(n => Number(n)).filter(Boolean)
   if (use.length < 2) {
     ctx.status = 400
-    ctx.body = { success: false, message: 'ids 需要至少2个有效值' }
+    ctx.body = { success: false, message: '\u53c2\u6570\u9700\u8981\u81f3\u5c11\u4e24\u4e2a\u6709\u6548\u503c' }
     return
   }
   const placeholders = use.map(() => '?').join(',')
   const [rows] = await pool.execute(
-    `SELECT id, name, category, calories, nutrition, allergens, tags, image_url
+    `SELECT id, name, category, calories, nutrition, allergens, tags, image_url,
+            serving_size_g, serving_unit, cook_method, ingredients, risk_flags, source, update_time
      FROM food_knowledge
      WHERE id IN (${placeholders})`,
     use

@@ -57,8 +57,8 @@ router.get('/today', async (ctx) => {
   }
 
   const userId = decoded.userId
-  const [[p]] = await pool.execute('SELECT profile_json FROM user_profile WHERE user_id = ? LIMIT 1', [userId])
-  const profile = p?.profile_json ? (typeof p.profile_json === 'string' ? JSON.parse(p.profile_json) : p.profile_json) : null
+  const [[p]] = await pool.execute('SELECT profile FROM user_profile WHERE user_id = ? LIMIT 1', [userId])
+  const profile = p?.profile ? (typeof p.profile === 'string' ? JSON.parse(p.profile) : p.profile) : null
   const goal = profile?.goal || '减脂'
   const allergies = new Set((profile?.allergies || []).map(String))
 

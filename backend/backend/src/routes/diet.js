@@ -10,6 +10,61 @@ async function auth(ctx) {
   return await verifyToken(token)
 }
 
+const parseJson = (value, fallback) => {
+  if (value === null || value === undefined) return fallback
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch (err) {
+    return fallback
+  }
+}
+
+const toYmd = (d = new Date()) => {
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const macroSql = {
+  protein: "COALESCE(JSON_EXTRACT(nutrition, '$.protein_g'), JSON_EXTRACT(nutrition, '$.protein'), 0) + 0",
+  fat: "COALESCE(JSON_EXTRACT(nutrition, '$.fat_g'), JSON_EXTRACT(nutrition, '$.fat'), 0) + 0",
+  carbs: "COALESCE(JSON_EXTRACT(nutrition, '$.carb_g'), JSON_EXTRACT(nutrition, '$.carbs'), JSON_EXTRACT(nutrition, '$.carbohydrate_g'), 0) + 0",
+  sodium: "COALESCE(JSON_EXTRACT(nutrition, '$.sodium_mg'), JSON_EXTRACT(nutrition, '$.sodium'), 0) + 0",
+  sugar: "COALESCE(JSON_EXTRACT(nutrition, '$.sugar_g'), JSON_EXTRACT(nutrition, '$.sugar'), 0) + 0"
+}
+
+const getTargetCalories = async (userId) => {
+  const [[row]] = await pool.execute(
+    'SELECT profile FROM user_profile WHERE user_id = ? LIMIT 1',
+    [userId]
+  )
+  if (!row) return null
+  const profile = parseJson(row.profile, null)
+  if (!profile || typeof profile !== 'object') return null
+  const target = Number(profile.calorie_target ?? profile.goal ?? profile.target_calories)
+  return Number.isFinite(target) ? target : null
+}
+
+const computeStatus = (totalCalories, targetCalories) => {
+  if (!targetCalories || !Number.isFinite(Number(totalCalories))) return null
+  const total = Number(totalCalories)
+  if (total <= targetCalories) return 'OK'
+  if (total <= targetCalories * 1.1) return 'WARN'
+  return 'HIGH'
+}
+
+const scaleNutrition = (nutrition, ratio) => {
+  if (!nutrition || typeof nutrition !== 'object') return nutrition
+  const scaled = {}
+  for (const [key, value] of Object.entries(nutrition)) {
+    const num = Number(value)
+    scaled[key] = Number.isFinite(num) ? Math.round(num * ratio * 100) / 100 : value
+  }
+  return scaled
+}
+
 // 新增饮食记录
 router.post('/add', async (ctx) => {
   const decoded = await auth(ctx)
@@ -21,43 +76,76 @@ router.post('/add', async (ctx) => {
 
   const {
     log_date,
+    date,
     meal_type,
     food_name,
-    img_url = '',
     calories = 0,
-    protein = 0,
-    fat = 0,
-    carbs = 0,
-    sodium = 0,
-    sugar = 0,
+    nutrition = null,
     allergens = [],
+    portion = 1,
+    portion_unit = '\u4efd',
     note = ''
   } = ctx.request.body || {}
 
-  if (!log_date || !meal_type || !food_name) {
+  const logDate = log_date || date || toYmd()
+
+  if (!logDate || !meal_type || !food_name) {
     ctx.status = 400
     ctx.body = { success: false, message: '缺少必要字段：log_date/meal_type/food_name' }
     return
   }
 
+  const portionNum = Number(portion) || 1
+  const portionUnit = String(portion_unit || '\u4efd')
+
+  let resolvedCalories = Number(calories) || 0
+  let resolvedNutrition = nutrition
+  let resolvedAllergens = allergens || []
+
+  const [foodRows] = await pool.execute(
+    'SELECT calories, nutrition, allergens FROM food_knowledge WHERE name = ? LIMIT 1',
+    [food_name]
+  )
+  if (foodRows.length) {
+    const food = foodRows[0]
+    const foodCalories = Number(food.calories)
+    if (Number.isFinite(foodCalories) && foodCalories >= 0) {
+      resolvedCalories = foodCalories
+    }
+    const foodNutrition = parseJson(food.nutrition, null)
+    if (foodNutrition && typeof foodNutrition === 'object') {
+      resolvedNutrition = foodNutrition
+    }
+    const foodAllergens = parseJson(food.allergens, [])
+    if (Array.isArray(foodAllergens)) {
+      resolvedAllergens = foodAllergens
+    }
+  }
+
+  const scaledCalories = Math.round((Number(resolvedCalories) || 0) * portionNum)
+  const scaledNutrition = portionNum !== 1 ? scaleNutrition(resolvedNutrition, portionNum) : resolvedNutrition
+
+  const nutritionValue = scaledNutrition == null
+    ? null
+    : (typeof scaledNutrition === 'string' ? scaledNutrition : JSON.stringify(scaledNutrition))
+  const allergensValue = Array.isArray(resolvedAllergens)
+    ? JSON.stringify(resolvedAllergens)
+    : JSON.stringify([])
+
   const [ret] = await pool.execute(
-    `INSERT INTO diet_log (user_id, log_date, meal_type, food_name, img_url,
-       calories, protein, fat, carbs, sodium, sugar, allergens, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO diet_log (user_id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       decoded.userId,
-      log_date,
+      logDate,
       meal_type,
       food_name,
-      img_url,
-      Number(calories) || 0,
-      Number(protein) || 0,
-      Number(fat) || 0,
-      Number(carbs) || 0,
-      Number(sodium) || 0,
-      Number(sugar) || 0,
-      JSON.stringify(allergens || []),
-      note
+      scaledCalories,
+      nutritionValue,
+      allergensValue,
+      note,
+      portionNum,
+      portionUnit
     ]
   )
 
@@ -65,40 +153,64 @@ router.post('/add', async (ctx) => {
 })
 
 // 某天列表
+// list by date
 router.get('/list', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
     ctx.status = 401
-    ctx.body = { success: false, message: '未授权' }
+    ctx.body = { success: false, message: 'unauthorized' }
     return
   }
 
   const date = ctx.query.date
   if (!date) {
     ctx.status = 400
-    ctx.body = { success: false, message: '缺少 date' }
+    ctx.body = { success: false, message: 'missing date' }
     return
   }
 
   const [rows] = await pool.execute(
-    `SELECT id, log_date, meal_type, food_name, img_url, calories, protein, fat, carbs, sodium, sugar, allergens, note, create_time
+    `SELECT id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit, create_time
      FROM diet_log
      WHERE user_id = ? AND log_date = ?
-     ORDER BY FIELD(meal_type,'早餐','午餐','晚餐','加餐'), create_time ASC`,
+     ORDER BY FIELD(meal_type,'breakfast','lunch','dinner','snack'), create_time ASC`,
     [decoded.userId, date]
   )
 
+  const list = rows.map((r) => ({
+    ...r,
+    nutrition: parseJson(r.nutrition, null),
+    allergens: parseJson(r.allergens, []),
+    portion_num: r.portion_num ?? 1,
+    portion_unit: r.portion_unit ?? '\u4efd'
+  }))
+
+  const [summaryRows] = await pool.execute(
+    `SELECT 
+        IFNULL(SUM(calories),0) AS calories,
+        IFNULL(SUM(${macroSql['protein']}),0) AS protein,
+        IFNULL(SUM(${macroSql['fat']}),0) AS fat,
+        IFNULL(SUM(${macroSql['carbs']}),0) AS carbs
+     FROM diet_log
+     WHERE user_id = ? AND log_date = ?`,
+    [decoded.userId, date]
+  )
+
+  const summary = summaryRows[0] || { calories: 0, protein: 0, fat: 0, carbs: 0 }
+  const targetCalories = await getTargetCalories(decoded.userId)
+  const status = computeStatus(summary.calories, targetCalories)
+
   ctx.body = {
     success: true,
-    data: rows.map(r => ({
-      ...r,
-      allergens: typeof r.allergens === 'string' ? JSON.parse(r.allergens || '[]') : (r.allergens || [])
-    }))
+    data: {
+      list,
+      summary,
+      target_calories: targetCalories,
+      status
+    }
   }
 })
 
-// 删除一条记录
-// 删除一条记录
 router.post('/remove/:id', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
@@ -106,7 +218,7 @@ router.post('/remove/:id', async (ctx) => {
     ctx.body = { success: false, message: '未授权' }
     return
   }
-  const userId = decoded.id
+  const userId = decoded.userId
   const id = ctx.params.id
   try {
     await pool.execute('DELETE FROM diet_log WHERE id = ? AND user_id = ?', [id, userId])
@@ -118,11 +230,12 @@ router.post('/remove/:id', async (ctx) => {
 })
 
 // 日历摘要：范围内每天的热量
+// calendar month summary
 router.get('/calendar', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
     ctx.status = 401
-    ctx.body = { success: false, message: '未授权' }
+    ctx.body = { success: false, message: 'unauthorized' }
     return
   }
 
@@ -130,16 +243,14 @@ router.get('/calendar', async (ctx) => {
   const to = ctx.query.to
   if (!from || !to) {
     ctx.status = 400
-    ctx.body = { success: false, message: '缺少 from/to' }
+    ctx.body = { success: false, message: 'missing from/to' }
     return
   }
 
   const [rows] = await pool.execute(
     `SELECT log_date,
-            SUM(calories) AS calories,
-            SUM(protein) AS protein,
-            SUM(fat) AS fat,
-            SUM(carbs) AS carbs
+            SUM(calories) AS total_calories,
+            COUNT(*) AS meals
      FROM diet_log
      WHERE user_id = ? AND log_date BETWEEN ? AND ?
      GROUP BY log_date
@@ -147,15 +258,27 @@ router.get('/calendar', async (ctx) => {
     [decoded.userId, from, to]
   )
 
-  ctx.body = { success: true, data: rows }
+  const targetCalories = await getTargetCalories(decoded.userId)
+  const list = rows.map((row) => ({
+    ...row,
+    status: computeStatus(row.total_calories, targetCalories)
+  }))
+
+  ctx.body = {
+    success: true,
+    data: {
+      list,
+      target_calories: targetCalories
+    }
+  }
 })
 
-// 趋势统计（默认7天）
+// trend summary
 router.get('/summary', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
     ctx.status = 401
-    ctx.body = { success: false, message: '未授权' }
+    ctx.body = { success: false, message: 'unauthorized' }
     return
   }
   const days = Math.max(1, Math.min(90, Number(ctx.query.days || 7)))
@@ -163,11 +286,11 @@ router.get('/summary', async (ctx) => {
   const [rows] = await pool.execute(
     `SELECT log_date,
             SUM(calories) AS calories,
-            SUM(protein) AS protein,
-            SUM(fat) AS fat,
-            SUM(carbs) AS carbs,
-            SUM(sodium) AS sodium,
-            SUM(sugar) AS sugar
+            SUM(${macroSql['protein']}) AS protein,
+            SUM(${macroSql['fat']}) AS fat,
+            SUM(${macroSql['carbs']}) AS carbs,
+            SUM(${macroSql['sodium']}) AS sodium,
+            SUM(${macroSql['sugar']}) AS sugar
      FROM diet_log
      WHERE user_id = ? AND log_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
      GROUP BY log_date
@@ -175,15 +298,26 @@ router.get('/summary', async (ctx) => {
     [decoded.userId, days]
   )
 
-  ctx.body = { success: true, data: rows }
+  ctx.body = {
+    success: true,
+    data: {
+      trend: rows.map((r) => ({
+        date: r.log_date,
+        calories: r.calories ?? 0,
+        protein: r.protein ?? 0,
+        carbs: r.carbs ?? 0,
+        fat: r.fat ?? 0
+      }))
+    }
+  }
 })
 
-// 个人饮食分析（MVP）
+// day analysis
 router.get('/analysis', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
     ctx.status = 401
-    ctx.body = { success: false, message: '未授权' }
+    ctx.body = { success: false, message: 'unauthorized' }
     return
   }
 
@@ -194,16 +328,16 @@ router.get('/analysis', async (ctx) => {
     useDate
       ? `SELECT 
            IFNULL(SUM(calories),0) AS calories,
-           IFNULL(SUM(protein),0) AS protein,
-           IFNULL(SUM(fat),0) AS fat,
-           IFNULL(SUM(carbs),0) AS carbs
+           IFNULL(SUM(${macroSql['protein']}),0) AS protein,
+           IFNULL(SUM(${macroSql['fat']}),0) AS fat,
+           IFNULL(SUM(${macroSql['carbs']}),0) AS carbs
          FROM diet_log
          WHERE user_id = ? AND log_date = ?`
       : `SELECT 
            IFNULL(SUM(calories),0) AS calories,
-           IFNULL(SUM(protein),0) AS protein,
-           IFNULL(SUM(fat),0) AS fat,
-           IFNULL(SUM(carbs),0) AS carbs
+           IFNULL(SUM(${macroSql['protein']}),0) AS protein,
+           IFNULL(SUM(${macroSql['fat']}),0) AS fat,
+           IFNULL(SUM(${macroSql['carbs']}),0) AS carbs
          FROM diet_log
          WHERE user_id = ? AND log_date = CURDATE()`,
     useDate ? [decoded.userId, date] : [decoded.userId]
@@ -216,16 +350,16 @@ router.get('/analysis', async (ctx) => {
          WHERE user_id = ?
            AND log_date BETWEEN DATE_SUB(?, INTERVAL 2 DAY) AND ?
            AND (
-             food_name LIKE '%油炸%' OR food_name LIKE '%炸%' OR
-             note LIKE '%油炸%' OR note LIKE '%炸%'
+             food_name LIKE '%油炸%' OR food_name LIKE '%炸%' OR food_name LIKE '%煎%' OR
+             note LIKE '%油炸%' OR note LIKE '%炸%' OR note LIKE '%煎%'
            )`
       : `SELECT COUNT(*) AS fried_count
          FROM diet_log
          WHERE user_id = ?
            AND log_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 2 DAY) AND CURDATE()
            AND (
-             food_name LIKE '%油炸%' OR food_name LIKE '%炸%' OR
-             note LIKE '%油炸%' OR note LIKE '%炸%'
+             food_name LIKE '%油炸%' OR food_name LIKE '%炸%' OR food_name LIKE '%煎%' OR
+             note LIKE '%油炸%' OR note LIKE '%炸%' OR note LIKE '%煎%'
            )`,
     useDate ? [decoded.userId, date, date] : [decoded.userId]
   )
@@ -241,11 +375,12 @@ router.get('/analysis', async (ctx) => {
     : { protein: 0, fat: 0, carbs: 0 }
 
   const suggestions = []
-  if (Number(summary.calories || 0) > 2000) {
-    suggestions.push('今日热量摄入偏高，建议晚餐选择清淡食物')
+  const targetCalories = await getTargetCalories(decoded.userId)
+  if (targetCalories && Number(summary.calories || 0) > targetCalories) {
+    suggestions.push('今日热量摄入偏高，建议晚餐选择清淡一些')
   }
   if (Number(friedRows[0]?.fried_count || 0) > 2) {
-    suggestions.push('最近油炸食品偏多，建议增加蔬菜摄入')
+    suggestions.push('近两天油炸/煎类偏多，建议增加蔬菜摄入')
   }
 
   ctx.body = {
@@ -263,13 +398,13 @@ router.delete('/:id', async (ctx) => {
   const decoded = await auth(ctx)
   if (!decoded) {
     ctx.status = 401
-    ctx.body = { success: false, message: '未授权' }
+    ctx.body = { success: false, message: 'unauthorized' }
     return
   }
   const id = Number(ctx.params.id)
   if (!id) {
     ctx.status = 400
-    ctx.body = { success: false, message: '缺少 id' }
+    ctx.body = { success: false, message: 'missing id' }
     return
   }
   const [ret] = await pool.execute('DELETE FROM diet_log WHERE id = ? AND user_id = ?', [id, decoded.userId])

@@ -60,7 +60,7 @@ const routes = [
         path: '/knowledge',
         name: 'Knowledge',
         component: () => import('@/views/Knowledge.vue'),
-        meta: { title: '饮食知识库', requiresAuth: true }
+        meta: { title: '\u996e\u98df\u77e5\u8bc6\u5e93', requiresAuth: true }
     },
     {
         path: '/chat',
