@@ -132,24 +132,48 @@ router.post('/add', async (ctx) => {
     ? JSON.stringify(resolvedAllergens)
     : JSON.stringify([])
 
-  const [ret] = await pool.execute(
-    `INSERT INTO diet_log (user_id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      decoded.userId,
-      logDate,
-      meal_type,
-      food_name,
-      scaledCalories,
-      nutritionValue,
-      allergensValue,
-      note,
-      portionNum,
-      portionUnit
-    ]
-  )
+  try {
+    const [ret] = await pool.execute(
+      `INSERT INTO diet_log (user_id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        decoded.userId,
+        logDate,
+        meal_type,
+        food_name,
+        scaledCalories,
+        nutritionValue,
+        allergensValue,
+        note,
+        portionNum,
+        portionUnit
+      ]
+    )
 
-  ctx.body = { success: true, data: { id: ret.insertId } }
+    ctx.body = { success: true, data: { id: ret.insertId } }
+  } catch (e) {
+    // Backward compatibility for older schema without portion columns.
+    if (e && e.code === 'ER_BAD_FIELD_ERROR') {
+      const [ret] = await pool.execute(
+        `INSERT INTO diet_log (user_id, log_date, meal_type, food_name, calories, nutrition, allergens, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          decoded.userId,
+          logDate,
+          meal_type,
+          food_name,
+          scaledCalories,
+          nutritionValue,
+          allergensValue,
+          note
+        ]
+      )
+      ctx.body = { success: true, data: { id: ret.insertId } }
+      return
+    }
+    ctx.status = 500
+    ctx.body = { success: false, message: '添加失败', error: e?.message }
+  }
 })
 
 // 某天列表
@@ -169,13 +193,30 @@ router.get('/list', async (ctx) => {
     return
   }
 
-  const [rows] = await pool.execute(
-    `SELECT id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit, create_time
-     FROM diet_log
-     WHERE user_id = ? AND log_date = ?
-     ORDER BY FIELD(meal_type,'breakfast','lunch','dinner','snack'), create_time ASC`,
-    [decoded.userId, date]
-  )
+  let rows = []
+  try {
+    const [ret] = await pool.execute(
+      `SELECT id, log_date, meal_type, food_name, calories, nutrition, allergens, note, portion_num, portion_unit, create_time
+       FROM diet_log
+       WHERE user_id = ? AND log_date = ?
+       ORDER BY FIELD(meal_type,'breakfast','lunch','dinner','snack'), create_time ASC`,
+      [decoded.userId, date]
+    )
+    rows = ret
+  } catch (e) {
+    if (e && e.code === 'ER_BAD_FIELD_ERROR') {
+      const [ret] = await pool.execute(
+        `SELECT id, log_date, meal_type, food_name, calories, nutrition, allergens, note, create_time
+         FROM diet_log
+         WHERE user_id = ? AND log_date = ?
+         ORDER BY FIELD(meal_type,'breakfast','lunch','dinner','snack'), create_time ASC`,
+        [decoded.userId, date]
+      )
+      rows = ret.map((r) => ({ ...r, portion_num: 1, portion_unit: '\u4efd' }))
+    } else {
+      throw e
+    }
+  }
 
   const list = rows.map((r) => ({
     ...r,

@@ -240,7 +240,9 @@ import * as echarts from 'echarts'
 import NavBar from '@/components/NavBar.vue'
 import { dietApi } from '@/api'
 import dayjs from 'dayjs'
+import { useRoute } from 'vue-router'
 
+const route = useRoute()
 const date = ref(dayjs().format('YYYY-MM-DD'))
 const calendarDate = ref(new Date())
 
@@ -343,6 +345,32 @@ const loadCalendar = async () => {
   }
 }
 
+const resolveRouteDate = () => {
+  const raw = typeof route.query.date === 'string' ? route.query.date : ''
+  if (!raw) return null
+  const parsed = dayjs(raw)
+  if (!parsed.isValid()) return null
+  return parsed.format('YYYY-MM-DD')
+}
+
+const syncFromRoute = async (options = {}) => {
+  const { withTrend = false } = options
+  const targetDate = resolveRouteDate()
+  if (targetDate) {
+    date.value = targetDate
+    calendarDate.value = dayjs(targetDate).toDate()
+  }
+  if (withTrend) {
+    await loadTrend()
+  }
+  await loadCalendar()
+  if (route.query.summary === '1' && targetDate) {
+    await openDaySummary(targetDate)
+    return
+  }
+  await loadDay()
+}
+
 const openDaySummary = async (day) => {
   summaryDate.value = day
   summaryDialog.value = true
@@ -410,9 +438,11 @@ const renderChart = () => {
 }
 
 onMounted(async () => {
-  await loadTrend()
-  await loadCalendar()
-  await loadDay()
+  await syncFromRoute({ withTrend: true })
+})
+
+watch(() => route.query, async () => {
+  await syncFromRoute({ withTrend: true })
 })
 
 watch(calendarDate, async () => {
