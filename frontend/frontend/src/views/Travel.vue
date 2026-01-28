@@ -255,6 +255,10 @@
                                     <el-button size="small" @click="clearPlannedRoute" :disabled="!routePlanned">
                                         清除路线
                                     </el-button>
+                                    <el-button size="small" type="success" @click="saveFootprint" :loading="savingFootprint"
+                                        :disabled="!routePlanned">
+                                        保存足迹
+                                    </el-button>
                                     <el-button size="small" :type="markingMode ? 'danger' : 'default'"
                                         @click="toggleMarkingMode">
                                         {{ markingMode ? '退出标记' : '标记地点' }}
@@ -265,12 +269,17 @@
                                     选择餐厅或标记地点后即可规划路线
                                 </div>
                                 <div v-else class="route-stops">
-                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop">
+                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop"
+                                        draggable="true"
+                                        @dragstart="onStopDragStart(index)"
+                                        @dragover.prevent
+                                        @drop="onStopDrop(index)">
                                         <div class="route-index">{{ index + 1 }}</div>
                                         <div class="route-info">
                                             <div class="route-name">{{ stop.name }}</div>
                                             <div class="route-address">{{ stop.address || '地址未知' }}</div>
                                         </div>
+                                        <el-tag size="small" type="info" effect="plain" class="drag-hint">拖拽排序</el-tag>
                                         <el-button size="small" link type="danger" @click="removeStop(stop.id)">
                                             移除
                                         </el-button>
@@ -394,6 +403,7 @@ const recognitionStore = useRecognitionStore()
 const destination = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const savingFootprint = ref(false)
 const routeType = ref('driving')
 const currentLocation = ref(null)
 const originMode = ref('current')
@@ -414,6 +424,7 @@ const restaurantKeyword = ref('')
 const selectedCategory = ref('')
 const sortRule = ref('distance')
 const selectedStops = ref([])
+const draggingStopIndex = ref(null)
 const markingMode = ref(false)
 const routePlanned = ref(false)
 const useCurrentLocationAsOrigin = ref(true)
@@ -1245,6 +1256,31 @@ const removeStop = (stopId) => {
     updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
 }
 
+// ====== 站点拖拽排序 ======
+const onStopDragStart = (index) => {
+    draggingStopIndex.value = index
+}
+
+const onStopDrop = async (dropIndex) => {
+    const fromIndex = draggingStopIndex.value
+    draggingStopIndex.value = null
+    if (fromIndex === null || fromIndex === undefined) return
+    if (fromIndex === dropIndex) return
+    if (fromIndex < 0 || dropIndex < 0) return
+    if (fromIndex >= selectedStops.value.length || dropIndex >= selectedStops.value.length) return
+
+    const next = [...selectedStops.value]
+    const [moved] = next.splice(fromIndex, 1)
+    next.splice(dropIndex, 0, moved)
+    selectedStops.value = next
+
+    // 如果已经规划过路线，排序变化后提示用户重新规划（也可以自动重算）
+    if (routePlanned.value) {
+        clearRouteOverlay()
+        ElMessage.info('站点顺序已更新，请重新点击「规划路线」生成新的分段路线')
+    }
+}
+
 const planRestaurantRoute = async () => {
     if (useCurrentLocationAsOrigin.value) {
         const origin = await ensureOriginLocation()
@@ -1507,6 +1543,63 @@ const saveCompletePlan = async () => {
         console.error('Save plan error:', error)
     } finally {
         saving.value = false
+    }
+}
+
+// 保存“规划好的路线(站点顺序 + 分段路线)”为足迹
+const saveFootprint = async () => {
+    if (!routePlanned.value || routePointList.value.length === 0) {
+        ElMessage.warning('请先选择站点并规划路线')
+        return
+    }
+
+    savingFootprint.value = true
+    try {
+        const now = new Date()
+        const yyyy = now.getFullYear()
+        const mm = String(now.getMonth() + 1).padStart(2, '0')
+        const dd = String(now.getDate()).padStart(2, '0')
+
+        const planData = {
+            rec_id: route.query.rec_id ? parseInt(route.query.rec_id) : null,
+            plan_name: `足迹-${destination.value || '路线'}-${yyyy}-${mm}-${dd}`,
+            destination: destination.value || (routePointList.value[routePointList.value.length - 1]?.name || '路线'),
+            origin_location: currentLocation.value
+                ? formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+                : '',
+            destination_location: '',
+            route_type: 'driving',
+            weather_info: currentWeatherInfo.value || weatherInfo.value || {},
+            route_info: {
+                type: 'multi_stop',
+                use_origin: useCurrentLocationAsOrigin.value,
+                points: routePointList.value,
+                segments: routeSegments.value,
+                polyline_points: lastRoutePoints
+                    ? lastRoutePoints.map((p) => ({ lng: p.getLng?.() ?? p.lng, lat: p.getLat?.() ?? p.lat }))
+                    : []
+            },
+            recommended_restaurants: [],
+            attractions: [],
+            daily_budget: 0,
+            total_calories: 0,
+            plan_days: 1,
+            plan_summary: `足迹：${routePointList.value.map(p => p.name).join(' → ')}`,
+            status: 'footprint'
+        }
+
+        // 后端已经支持 status 字段（footprint/draft/done），这里直接走 savePlan
+        const res = await travelApi.savePlan(planData)
+        if (res.success) {
+            ElMessage.success('足迹保存成功')
+            router.push('/history')
+        } else {
+            ElMessage.error(res.message || '足迹保存失败')
+        }
+    } catch (error) {
+        ElMessage.error(error.message || '足迹保存失败')
+    } finally {
+        savingFootprint.value = false
     }
 }
 
@@ -1834,6 +1927,12 @@ onMounted(async () => {
                     gap: 8px;
                     padding-bottom: 8px;
                     border-bottom: 1px dashed #eee;
+                    cursor: grab;
+                    user-select: none;
+
+                    &:active {
+                        cursor: grabbing;
+                    }
 
                     &:last-child {
                         border-bottom: none;

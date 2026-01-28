@@ -805,7 +805,8 @@ router.post('/save-plan', async (ctx) => {
             daily_budget,
             total_calories,
             plan_days,
-            plan_summary
+            plan_summary,
+            status
         } = ctx.request.body
 
         if (!destination) {
@@ -815,12 +816,16 @@ router.post('/save-plan', async (ctx) => {
         }
 
         // 插入出行计划
+        const normalizedStatus = ['draft', 'footprint', 'done'].includes(String(status || '').trim())
+            ? String(status).trim()
+            : 'draft'
+
         const [result] = await pool.execute(
             `INSERT INTO travel_plan (
           user_id, rec_id, plan_name, destination, origin_location, destination_location,
           route_type, weather_info, route_info, recommended_restaurants, attractions,
           daily_budget, total_calories, plan_days, plan_summary, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 decoded.userId,
                 rec_id || null,
@@ -836,7 +841,8 @@ router.post('/save-plan', async (ctx) => {
                 daily_budget || 0,
                 total_calories || 0,
                 plan_days || 1,
-                plan_summary || ''
+                plan_summary || '',
+                normalizedStatus
             ]
         )
 

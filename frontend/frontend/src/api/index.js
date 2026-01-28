@@ -232,6 +232,11 @@ export const travelApi = {
     return api.post('/travel/save-plan', planData)
   },
 
+  // 保存为足迹（本质上也是一条出行计划，status=footprint）
+  saveFootprint: (planData) => {
+    return api.post('/travel/save-plan', { ...(planData || {}), status: 'footprint' })
+  },
+
   // 获取出行计划列表
   getPlans: (page = 1, size = 10, status = '', keyword = '') => {
     return api.get('/travel/plans', {
