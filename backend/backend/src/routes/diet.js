@@ -291,7 +291,14 @@ router.get('/calendar', async (ctx) => {
   const [rows] = await pool.execute(
     `SELECT log_date,
             SUM(calories) AS total_calories,
-            COUNT(*) AS meals
+            COUNT(*) AS meals,
+            SUM(${macroSql['protein']}) AS protein,
+            SUM(${macroSql['fat']}) AS fat,
+            SUM(${macroSql['carbs']}) AS carbs,
+            SUM(CASE WHEN meal_type = 'breakfast' THEN 1 ELSE 0 END) AS breakfast_count,
+            SUM(CASE WHEN meal_type = 'lunch' THEN 1 ELSE 0 END) AS lunch_count,
+            SUM(CASE WHEN meal_type = 'dinner' THEN 1 ELSE 0 END) AS dinner_count,
+            SUM(CASE WHEN meal_type = 'snack' THEN 1 ELSE 0 END) AS snack_count
      FROM diet_log
      WHERE user_id = ? AND log_date BETWEEN ? AND ?
      GROUP BY log_date

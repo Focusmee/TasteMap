@@ -23,14 +23,34 @@
                     </el-input>
                 </div>
 
-                <!-- 当前位置显示 -->
-                <div v-if="currentLocation" class="location-info">
-                    <el-tag type="info" size="small">
-                        <el-icon>
-                            <LocationFilled />
-                        </el-icon>
-                        当前位置：{{ currentLocation.address || `${currentLocation.lng}, ${currentLocation.lat}` }}
-                    </el-tag>
+                <!-- 起点选择 -->
+                <div class="origin-selector">
+                    <div class="origin-row">
+                        <span class="origin-label">起点</span>
+                        <el-radio-group v-model="originMode" size="small" @change="handleOriginModeChange">
+                            <el-radio-button label="current">当前位置</el-radio-button>
+                            <el-radio-button label="manual">手动输入</el-radio-button>
+                        </el-radio-group>
+                        <el-button v-if="originMode === 'current'" size="small" type="primary"
+                            :loading="originLoading" @click="refreshCurrentOrigin">
+                            使用当前位置
+                        </el-button>
+                    </div>
+                    <div v-if="originMode === 'manual'" class="origin-input">
+                        <el-input v-model="originInput" placeholder="请输入起点位置（如：北京站）" size="small" clearable
+                            @keyup.enter="applyManualOrigin" />
+                        <el-button size="small" type="primary" :loading="originLoading" @click="applyManualOrigin">
+                            设为起点
+                        </el-button>
+                    </div>
+                    <div v-if="currentLocation" class="origin-display">
+                        <el-tag type="info" size="small">
+                            <el-icon>
+                                <LocationFilled />
+                            </el-icon>
+                            起点：{{ currentLocation.address || `${currentLocation.lng}, ${currentLocation.lat}` }}
+                        </el-tag>
+                    </div>
                 </div>
 
                 <!-- 推荐信息展示 -->
@@ -169,7 +189,7 @@
                             <div class="rule-section">
                                 <div class="rule-title">天气出行建议</div>
                                 <div v-if="currentWeatherInfo" class="rule-current">
-                                    <div class="rule-current-title">当前位置天气</div>
+                                    <div class="rule-current-title">起点天气</div>
                                     <div class="rule-current-meta">
                                         {{ currentWeatherInfo.weather }} · {{ currentWeatherInfo.temperature }}℃
                                         <span v-if="currentWeatherInfo.winddir">
@@ -192,7 +212,7 @@
                                         推荐：{{ item.label }}
                                     </el-button>
                                 </div>
-                                <div v-if="!weatherSource" class="rule-empty">先获取当前位置天气，再给出推荐规则</div>
+                                <div v-if="!weatherSource" class="rule-empty">先获取起点天气，再给出推荐规则</div>
                             </div>
                             <div class="restaurant-section">
                                 <div class="restaurant-title">附近餐厅</div>
@@ -225,7 +245,7 @@
                                 <div class="route-actions">
 
                                     <div class="route-origin-toggle">
-                                        <span>以当前位置为起点</span>
+                                        <span>以起点位置为起点</span>
                                         <el-switch v-model="useCurrentLocationAsOrigin" size="small" />
                                     </div>
                                     <el-button size="small" type="primary" @click="planRestaurantRoute"
@@ -376,6 +396,12 @@ const loading = ref(false)
 const saving = ref(false)
 const routeType = ref('driving')
 const currentLocation = ref(null)
+const originMode = ref('current')
+const originInput = ref('')
+const originLoading = ref(false)
+const currentLocationSource = ref('current')
+const resolvedManualInput = ref('')
+const manualOriginCache = ref(null)
 const weatherInfo = ref(null)
 const currentWeatherInfo = ref(null)
 const routeInfo = ref(null)
@@ -699,7 +725,7 @@ const routePointList = computed(() => {
     if (useCurrentLocationAsOrigin.value && currentLocation.value) {
         points.push({
             id: 'origin',
-            name: '当前位置',
+            name: '起点',
             address: currentLocation.value.address || ''
         })
     }
@@ -845,7 +871,7 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
     const center = [location.lng, location.lat]
     const userMarker = new AMap.Marker({
         position: center,
-        title: 'Current location',
+        title: '??',
         anchor: 'bottom-center',
         icon: getCircleIcon(markerColors.current)
     })
@@ -932,7 +958,7 @@ const getWeatherIcon = (iconType) => {
     return iconMap[iconType] || '🌤️'
 }
 
-// 获取当前位置天气
+// 获取起点天气
 const loadCurrentWeather = async (location) => {
     if (!location?.lng || !location?.lat) {
         return
@@ -944,10 +970,10 @@ const loadCurrentWeather = async (location) => {
         if (res.success) {
             currentWeatherInfo.value = res.data
         } else {
-            console.warn(res.message || '获取当前位置天气失败')
+            console.warn(res.message || '获取起点天气失败')
         }
     } catch (error) {
-        console.warn('获取当前位置天气失败:', error)
+        console.warn('获取起点天气失败:', error)
     }
 }
 
@@ -1032,7 +1058,109 @@ const parseRouteResult = (data, type) => {
     return result
 }
 
-// 获取当前位置
+// 获取起点
+
+const setOriginLocation = async (location, source) => {
+    currentLocation.value = location
+    currentLocationSource.value = source
+    if (location?.lng && location?.lat) {
+        loadCurrentWeather(location)
+        ensureMap(location).then(() => {
+            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
+        }).catch(() => { })
+    }
+}
+
+const geocodeOriginAddress = async (address) => {
+    const res = await travelApi.geocodeAddress(address)
+    if (!res?.success) {
+        throw new Error(res?.message || '起点解析失败')
+    }
+    const [lngStr, latStr] = String(res.data?.location || '').split(',')
+    const lng = Number(lngStr)
+    const lat = Number(latStr)
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+        throw new Error('起点坐标解析失败')
+    }
+    return {
+        lng,
+        lat,
+        address: res.data?.address || address
+    }
+}
+
+const ensureOriginLocation = async () => {
+    if (originMode.value === 'current') {
+        if (currentLocation.value && currentLocationSource.value === 'current') {
+            return formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+        }
+        return await getLocation()
+    }
+
+    const address = originInput.value.trim()
+    if (!address) {
+        return ''
+    }
+
+    if (manualOriginCache.value && resolvedManualInput.value === address) {
+        await setOriginLocation(manualOriginCache.value, 'manual')
+        return formatLocation(manualOriginCache.value.lng, manualOriginCache.value.lat)
+    }
+
+    const location = await geocodeOriginAddress(address)
+    resolvedManualInput.value = address
+    manualOriginCache.value = location
+    await setOriginLocation(location, 'manual')
+    return formatLocation(location.lng, location.lat)
+}
+
+const refreshCurrentOrigin = async () => {
+    originLoading.value = true
+    try {
+        await getLocation()
+        await loadNearbyRestaurants()
+    } catch (error) {
+        console.error('Refresh origin error:', error)
+    } finally {
+        originLoading.value = false
+    }
+}
+
+const applyManualOrigin = async () => {
+    const address = originInput.value.trim()
+    if (!address) {
+        ElMessage.warning('请输入起点位置')
+        return
+    }
+
+    originLoading.value = true
+    try {
+        const location = await geocodeOriginAddress(address)
+        resolvedManualInput.value = address
+        manualOriginCache.value = location
+        await setOriginLocation(location, 'manual')
+        await loadNearbyRestaurants()
+    } catch (error) {
+        ElMessage.warning(error.message || '起点解析失败')
+    } finally {
+        originLoading.value = false
+    }
+}
+
+const handleOriginModeChange = async () => {
+    if (originMode.value === 'current') {
+        await refreshCurrentOrigin()
+        return
+    }
+    if (manualOriginCache.value) {
+        if (resolvedManualInput.value) {
+            originInput.value = resolvedManualInput.value
+        }
+        await setOriginLocation(manualOriginCache.value, 'manual')
+        await loadNearbyRestaurants()
+    }
+}
+
 const getLocation = async () => {
     try {
         const location = await getCurrentLocation()
@@ -1042,24 +1170,17 @@ const getLocation = async () => {
                 location.address = addr
             }
         }
-        currentLocation.value = location
-        loadCurrentWeather(location)
-        ensureMap(location).then(() => {
-            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
-        }).catch(() => { })
+        await setOriginLocation(location, 'current')
         return formatLocation(location.lng, location.lat)
     } catch (error) {
         console.error('获取位置失败:', error)
-        ElMessage.warning('获取当前位置失败，将使用默认起点')
-        currentLocation.value = {
+        ElMessage.warning('获取起点失败，将使用默认起点')
+        const fallback = {
             lng: 116.397428,
             lat: 39.90923,
             address: '默认位置'
         }
-        loadCurrentWeather(currentLocation.value)
-        ensureMap(currentLocation.value).then(() => {
-            updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
-        }).catch(() => { })
+        await setOriginLocation(fallback, 'current')
         return '116.397428,39.90923'
     }
 }
@@ -1125,9 +1246,12 @@ const removeStop = (stopId) => {
 }
 
 const planRestaurantRoute = async () => {
-    if (!currentLocation.value && useCurrentLocationAsOrigin.value) {
-        ElMessage.warning('Please get current location first')
-        return
+    if (useCurrentLocationAsOrigin.value) {
+        const origin = await ensureOriginLocation()
+        if (!origin || !currentLocation.value) {
+            ElMessage.warning('请先设置起点')
+            return
+        }
     }
     const validStops = selectedStops.value
         .map((stop) => ({ ...stop, coord: parseLocation(stop.location) }))
@@ -1142,7 +1266,7 @@ const planRestaurantRoute = async () => {
         return
     }
     if (!useCurrentLocationAsOrigin.value && validStops.length < 2) {
-        ElMessage.warning('Please select at least two places when not using current location as origin')
+        ElMessage.warning('不使用起点作为起点时，请至少选择两个地点')
         return
     }
 
@@ -1159,7 +1283,7 @@ const planRestaurantRoute = async () => {
         let stopsForSegments = [...validStops]
         if (useCurrentLocationAsOrigin.value) {
             segmentStart = formatLocation(currentLocation.value.lng, currentLocation.value.lat)
-            startName = currentLocation.value.address || 'Current location'
+            startName = currentLocation.value.address || '起点'
         } else {
             segmentStart = stopLocations.shift()
             const firstStop = stopsForSegments.shift()
@@ -1217,17 +1341,15 @@ const clearPlannedRoute = () => {
 }
 
 const loadNearbyRestaurants = async (radiusOverride = null, options = {}) => {
-    if (!currentLocation.value) {
-        await getLocation()
-        if (!currentLocation.value) {
-            return
-        }
+    const origin = await ensureOriginLocation()
+    if (!origin || !currentLocation.value) {
+        return
     }
 
     loadingRestaurants.value = true
     try {
         await ensureMap(currentLocation.value)
-        const location = formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+        const location = origin
         const radiusValue = Number.isFinite(radiusOverride) ? radiusOverride : getEffectiveRadius()
         const params = {
             location,
@@ -1272,7 +1394,11 @@ const loadTravelInfo = async () => {
     loading.value = true
     showAllSteps.value = false // 重新查询时重置展开状态
     try {
-        const origin = await getLocation()
+        const origin = await ensureOriginLocation()
+        if (!origin) {
+            ElMessage.warning('请先设置起点')
+            return
+        }
         const cityName = extractCityName(destination.value)
 
         const [weatherRes, routeRes] = await Promise.all([
@@ -1311,11 +1437,15 @@ const toggleRouteSteps = () => {
 
 // 切换路线类型
 const handleRouteTypeChange = async () => {
-    if (destination.value && currentLocation.value) {
+    if (destination.value) {
         loading.value = true
         showAllSteps.value = false // 切换路线类型时重置展开状态
         try {
-            const origin = formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+            const origin = await ensureOriginLocation()
+            if (!origin) {
+            ElMessage.warning('请先设置起点')
+                return
+            }
             const cityName = extractCityName(destination.value)
 
             const routeRes = await travelApi.getRoute(routeType.value, origin, destination.value, cityName)
@@ -1425,8 +1555,36 @@ onMounted(async () => {
             margin-bottom: 16px;
         }
 
-        .location-info {
+        .origin-selector {
             margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .origin-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .origin-label {
+            font-weight: 600;
+            color: $text-primary;
+        }
+
+        .origin-input {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .origin-input :deep(.el-input) {
+            flex: 1;
+        }
+
+        .origin-display {
             display: flex;
             align-items: center;
             gap: 8px;

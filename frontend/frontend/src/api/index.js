@@ -170,7 +170,10 @@ export const knowledgeApi = {
   list: (params = {}) => api.get('/knowledge/list', { params }),
   detail: (id) => api.get(`/knowledge/${id}`),
   suggest: (q = '') => api.get('/knowledge/suggest', { params: { q } }),
-  compare: (ids = []) => api.post('/knowledge/compare', { ids })
+  compare: (ids = []) => api.post('/knowledge/compare', { ids }),
+  create: (payload) => api.post('/knowledge', payload),
+  update: (id, payload) => api.put(`/knowledge/${id}`, payload),
+  remove: (id) => api.delete(`/knowledge/${id}`)
 }
 
 // 推荐
@@ -209,6 +212,13 @@ export const travelApi = {
   getRoute: (type, origin, destination, city) => {
     return api.get('/travel/route', {
       params: { type, origin, destination, city }
+    })
+  },
+
+  // 地址地理编码
+  geocodeAddress: (address) => {
+    return api.get('/travel/geocode', {
+      params: { address }
     })
   },
 

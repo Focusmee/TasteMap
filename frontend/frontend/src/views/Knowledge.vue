@@ -90,6 +90,13 @@
 
               <el-empty v-else-if="displayedRows.length === 0" description="暂无菜品" />
               <div v-else class="card-grid">
+                <div class="food-card add-card" @click="openCreate">
+                  <div class="add-inner">
+                    <el-icon size="22"><Plus /></el-icon>
+                    <div class="add-title">添加菜品</div>
+                    <div class="add-sub">录入热量与营养信息</div>
+                  </div>
+                </div>
                 <div v-for="row in displayedRows" :key="row.id" class="food-card">
                   <div class="card-top">
                     <el-checkbox
@@ -235,24 +242,7 @@
           </div>
         </el-card>
 
-        <el-card class="panel" shadow="never">
-          <div class="panel-head">
-            <div class="t">快捷搜索</div>
-          </div>
-          <el-autocomplete
-            v-model="suggestText"
-            :fetch-suggestions="fetchSuggest"
-            placeholder="输入关键词，如：低脂、补蛋白、控糖"
-            clearable
-            @select="onSelectSuggest"
-          />
-          <el-divider />
-          <el-alert title="提示" type="info" show-icon :closable="false">
-            <template #default>
-              <div>双击表格行可打开详情；按住控制键或上档键可多选后对比。</div>
-            </template>
-          </el-alert>
-        </el-card>
+        
       </div>
     </div>
 
@@ -443,6 +433,73 @@
       </template>
     </el-dialog>
 
+
+    <el-dialog v-model="createDialog" title="添加菜品" width="640px">
+      <el-form :model="createForm" label-width="92px">
+        <el-form-item label="菜品名" required>
+          <el-input v-model="createForm.name" placeholder="例如：鸡胸肉沙拉" />
+        </el-form-item>
+
+        <el-form-item label="分类">
+          <el-input v-model="createForm.category" placeholder="例如：沙拉/主食/饮品" />
+        </el-form-item>
+
+        <el-form-item label="热量(千卡)" required>
+          <el-input-number v-model="createForm.calories" :min="0" :max="5000" controls-position="right" />
+          <span class="hint"> /100克</span>
+        </el-form-item>
+
+        <el-form-item label="蛋白/碳水/脂肪">
+          <el-input-number v-model="createForm.protein" :min="0" :max="200" controls-position="right" />
+          <span class="hint">g</span>
+          <el-input-number v-model="createForm.carbs" :min="0" :max="200" controls-position="right" style="margin-left:12px;" />
+          <span class="hint">g</span>
+          <el-input-number v-model="createForm.fat" :min="0" :max="200" controls-position="right" style="margin-left:12px;" />
+          <span class="hint">g</span>
+        </el-form-item>
+
+        <el-form-item label="其他营养">
+          <div class="row-2">
+            <div class="row-2-item">
+              <div class="row-2-label">纤维</div>
+              <el-input-number v-model="createForm.fiber" :min="0" :max="200" controls-position="right" />
+              <span class="hint">g</span>
+            </div>
+            <div class="row-2-item">
+              <div class="row-2-label">糖</div>
+              <el-input-number v-model="createForm.sugar" :min="0" :max="200" controls-position="right" />
+              <span class="hint">g</span>
+            </div>
+            <div class="row-2-item">
+              <div class="row-2-label">钠</div>
+              <el-input-number v-model="createForm.sodium" :min="0" :max="10000" controls-position="right" />
+              <span class="hint">mg</span>
+            </div>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="标签">
+          <el-input v-model="createForm.tags" placeholder="逗号分隔：low_fat,high_protein,spicy" />
+        </el-form-item>
+
+        <el-form-item label="过敏原">
+          <el-input v-model="createForm.allergens" placeholder="逗号分隔：peanut,milk,egg" />
+        </el-form-item>
+
+        <el-form-item label="描述">
+          <el-input v-model="createForm.description" type="textarea" :rows="3" placeholder="可选：口味/做法/注意事项" />
+        </el-form-item>
+
+        <el-form-item label="图片URL">
+          <el-input v-model="createForm.image_url" placeholder="可选：https://..." />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="createDialog=false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="submitCreate">保存</el-button>
+      </template>
+    </el-dialog>
     <div v-if="compareItems.length >= 2" class="compare-bar">
       <div class="compare-left">
         <div class="compare-title">对比模式 · 已选 {{ compareItems.length }} 个</div>
@@ -507,7 +564,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import NavBar from '@/components/NavBar.vue'
 import { knowledgeApi, dietApi } from '@/api'
-import { Search } from '@element-plus/icons-vue'
+import { Search, Plus } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 const loading = ref(false)
 const categories = ref([])
@@ -541,6 +598,83 @@ const bulkForm = ref({
 const bulkSummaryLoading = ref(false)
 const bulkSummary = ref({ calories: 0, protein: 0, carbs: 0, fat: 0 })
 const bulkSummaryList = ref([])
+
+
+const createDialog = ref(false)
+const creating = ref(false)
+const createForm = ref({
+  name: '',
+  category: '',
+  calories: 0,
+  protein: null,
+  carbs: null,
+  fat: null,
+  fiber: null,
+  sugar: null,
+  sodium: null,
+  tags: '',
+  allergens: '',
+  description: '',
+  image_url: ''
+})
+
+const openCreate = () => {
+  createForm.value = {
+    name: '',
+    category: '',
+    calories: 0,
+    protein: null,
+    carbs: null,
+    fat: null,
+    fiber: null,
+    sugar: null,
+    sodium: null,
+    tags: '',
+    allergens: '',
+    description: '',
+    image_url: ''
+  }
+  createDialog.value = true
+}
+
+const submitCreate = async () => {
+  const name = String(createForm.value.name || '').trim()
+  if (!name) {
+    ElMessage.warning('请先填写菜品名')
+    return
+  }
+  creating.value = true
+  try {
+    const payload = {
+      name,
+      category: createForm.value.category || null,
+      calories: Number(createForm.value.calories) || 0,
+      protein: createForm.value.protein,
+      carbs: createForm.value.carbs,
+      fat: createForm.value.fat,
+      fiber: createForm.value.fiber,
+      sugar: createForm.value.sugar,
+      sodium: createForm.value.sodium,
+      tags: createForm.value.tags,
+      allergens: createForm.value.allergens,
+      description: createForm.value.description || null,
+      image_url: createForm.value.image_url || null
+    }
+    const res = await knowledgeApi.create(payload)
+    if (res.success) {
+      ElMessage.success('已添加')
+      createDialog.value = false
+      await loadMeta()
+      await loadFirst()
+    } else {
+      ElMessage.error(res.message || '添加失败')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '添加失败')
+  } finally {
+    creating.value = false
+  }
+}
 
 const addDialog = ref(false)
 const adding = ref(false)
@@ -631,8 +765,6 @@ const sceneTags = (row) => {
 
 const cmpDialog = ref(false)
 const cmp = ref([])
-
-const suggestText = ref('')
 
 const commonAllergens = ['花生','牛奶','乳制品','鸸质','鸡蛋','大豆','豆类','海鲜','鱼','牛肉','猪肉','小麦']
 
@@ -946,17 +1078,6 @@ const compare = async () => {
   }
 }
 
-const fetchSuggest = async (q, cb) => {
-  const res = await knowledgeApi.suggest(q)
-  if (res.success) cb((res.data.list || []).map(x => ({ value: x })))
-}
-
-const onSelectSuggest = () => {
-  keyword.value = suggestText.value
-  page.value = 1
-  load()
-}
-
 watch(() => addForm.value.date, (val) => {
   if (addDialog.value) loadAddSummary(val)
 })
@@ -1034,7 +1155,7 @@ onMounted(() => {
 }
 .grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: 1fr;
   gap: 16px;
 }
 .panel-head {
@@ -1056,8 +1177,20 @@ onMounted(() => {
 }
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+@media (max-width: 1100px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .food-card {
   position: relative;
@@ -1488,5 +1621,60 @@ onMounted(() => {
   .grid {
     grid-template-columns: 1fr;
   }
+}
+
+.add-card {
+  cursor: pointer;
+  border: 1px dashed var(--el-border-color);
+  background: var(--el-fill-color-lighter);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 170px;
+}
+
+.add-card:hover {
+  border-color: var(--el-color-primary);
+}
+
+.add-inner {
+  text-align: center;
+  color: var(--el-text-color-regular);
+}
+
+.add-title {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.add-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.hint {
+  margin-left: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.row-2 {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.row-2-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row-2-label {
+  width: 32px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 </style>

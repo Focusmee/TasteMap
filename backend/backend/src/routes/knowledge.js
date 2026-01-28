@@ -38,6 +38,42 @@ const normalizeTag = (value) => {
   return value.trim().toLowerCase().replace(/\s+/g, '_').replace(/-+/g, '_')
 }
 
+const normalizeStringArrayInput = (value) => {
+  if (Array.isArray(value)) return value.map(String).map(v => v.trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map(v => v.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
+const normalizeTagArray = (value) => {
+  return normalizeStringArrayInput(value).map(normalizeTag).filter(Boolean)
+}
+
+const buildNutrition = (payload = {}) => {
+  if (payload.nutrition && typeof payload.nutrition === 'object' && !Array.isArray(payload.nutrition)) {
+    return payload.nutrition
+  }
+  const nutrition = {}
+  const protein = pickNumber(payload.protein)
+  const fat = pickNumber(payload.fat)
+  const carbs = pickNumber(payload.carbs ?? payload.carb)
+  const fiber = pickNumber(payload.fiber)
+  const sugar = pickNumber(payload.sugar)
+  const sodium = pickNumber(payload.sodium)
+
+  if (protein != null) nutrition.protein_g = protein
+  if (fat != null) nutrition.fat_g = fat
+  if (carbs != null) nutrition.carb_g = carbs
+  if (fiber != null) nutrition.fiber_g = fiber
+  if (sugar != null) nutrition.sugar_g = sugar
+  if (sodium != null) nutrition.sodium_mg = sodium
+  return nutrition
+}
+
 const normalizeFoodRow = (row) => {
   const rawNutrition = parseJson(row.nutrition, {}) || {}
   const nutrition = rawNutrition && typeof rawNutrition === 'object' && !Array.isArray(rawNutrition)
@@ -163,6 +199,139 @@ router.get('/:id', async (ctx) => {
   }
   const row = normalizeFoodRow(rows[0])
   ctx.body = { success: true, data: row }
+})
+
+router.post('/', async (ctx) => {
+  const payload = ctx.request.body || {}
+  const name = String(payload.name || '').trim()
+  if (!name) {
+    ctx.status = 400
+    ctx.body = { success: false, message: '\u83dc\u54c1\u540d\u4e0d\u80fd\u4e3a\u7a7a' }
+    return
+  }
+
+  const calories = pickNumber(payload.calories) ?? 0
+  const nutrition = buildNutrition(payload)
+  const allergens = normalizeTagArray(payload.allergens)
+  const tags = normalizeTagArray(payload.tags)
+  const ingredients = normalizeStringArrayInput(payload.ingredients)
+  const riskFlags = normalizeStringArrayInput(payload.risk_flags ?? payload.riskFlags)
+  const servingSize = pickNumber(payload.serving_size_g ?? payload.servingSize) ?? 100
+  const servingUnit = String(payload.serving_unit || payload.servingUnit || '\u514b').trim() || '\u514b'
+
+  try {
+    const [result] = await pool.execute(
+      `INSERT INTO food_knowledge
+       (name, category, calories, nutrition, allergens, tags, description, image_url,
+        serving_size_g, serving_unit, cook_method, ingredients, risk_flags, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name,
+        payload.category || null,
+        calories,
+        JSON.stringify(nutrition || {}),
+        JSON.stringify(allergens || []),
+        JSON.stringify(tags || []),
+        payload.description || null,
+        payload.image_url || null,
+        servingSize,
+        servingUnit,
+        payload.cook_method || null,
+        JSON.stringify(ingredients || []),
+        JSON.stringify(riskFlags || []),
+        payload.source || null
+      ]
+    )
+    ctx.body = { success: true, data: { id: result.insertId } }
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      ctx.status = 409
+      ctx.body = { success: false, message: '\u83dc\u54c1\u540d\u5df2\u5b58\u5728' }
+      return
+    }
+    throw err
+  }
+})
+
+router.put('/:id', async (ctx) => {
+  const id = Number(ctx.params.id)
+  const payload = ctx.request.body || {}
+  const name = String(payload.name || '').trim()
+  if (!id) {
+    ctx.status = 400
+    ctx.body = { success: false, message: '\u53c2\u6570\u65e0\u6548' }
+    return
+  }
+  if (!name) {
+    ctx.status = 400
+    ctx.body = { success: false, message: '\u83dc\u54c1\u540d\u4e0d\u80fd\u4e3a\u7a7a' }
+    return
+  }
+
+  const calories = pickNumber(payload.calories) ?? 0
+  const nutrition = buildNutrition(payload)
+  const allergens = normalizeTagArray(payload.allergens)
+  const tags = normalizeTagArray(payload.tags)
+  const ingredients = normalizeStringArrayInput(payload.ingredients)
+  const riskFlags = normalizeStringArrayInput(payload.risk_flags ?? payload.riskFlags)
+  const servingSize = pickNumber(payload.serving_size_g ?? payload.servingSize) ?? 100
+  const servingUnit = String(payload.serving_unit || payload.servingUnit || '\u514b').trim() || '\u514b'
+
+  try {
+    const [result] = await pool.execute(
+      `UPDATE food_knowledge SET
+        name = ?, category = ?, calories = ?, nutrition = ?, allergens = ?, tags = ?,
+        description = ?, image_url = ?, serving_size_g = ?, serving_unit = ?, cook_method = ?,
+        ingredients = ?, risk_flags = ?, source = ?
+       WHERE id = ?`,
+      [
+        name,
+        payload.category || null,
+        calories,
+        JSON.stringify(nutrition || {}),
+        JSON.stringify(allergens || []),
+        JSON.stringify(tags || []),
+        payload.description || null,
+        payload.image_url || null,
+        servingSize,
+        servingUnit,
+        payload.cook_method || null,
+        JSON.stringify(ingredients || []),
+        JSON.stringify(riskFlags || []),
+        payload.source || null,
+        id
+      ]
+    )
+    if (result.affectedRows === 0) {
+      ctx.status = 404
+      ctx.body = { success: false, message: '\u672a\u627e\u5230' }
+      return
+    }
+    ctx.body = { success: true }
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      ctx.status = 409
+      ctx.body = { success: false, message: '\u83dc\u54c1\u540d\u5df2\u5b58\u5728' }
+      return
+    }
+    throw err
+  }
+})
+
+router.delete('/:id', async (ctx) => {
+  const id = Number(ctx.params.id)
+  if (!id) {
+    ctx.status = 400
+    ctx.body = { success: false, message: '\u53c2\u6570\u65e0\u6548' }
+    return
+  }
+  const [result] = await pool.execute('DELETE FROM food_knowledge WHERE id = ?', [id])
+  if (result.affectedRows === 0) {
+    ctx.status = 404
+    ctx.body = { success: false, message: '\u672a\u627e\u5230' }
+    return
+  }
+  ctx.body = { success: true }
 })
 
 router.post('/compare', async (ctx) => {

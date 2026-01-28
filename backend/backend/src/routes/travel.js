@@ -339,7 +339,8 @@ const getLocationByAddress = async (address) => {
             const geocode = response.data.geocodes[0]
             return {
                 location: geocode.location, // 格式: "lng,lat"
-                adcode: geocode.adcode
+                adcode: geocode.adcode,
+                formattedAddress: geocode.formatted_address || geocode.formattedAddress || address
             }
         }
         return null
@@ -349,6 +350,52 @@ const getLocationByAddress = async (address) => {
     }
 }
 
+router.get('/geocode', async (ctx) => {
+    try {
+        const token = ctx.headers.authorization?.replace('Bearer ', '')
+        if (!token) {
+            ctx.status = 401
+            ctx.body = { success: false, message: '未授权，请先登录' }
+            return
+        }
+
+        const decoded = await verifyToken(token)
+        if (!decoded) {
+            ctx.status = 401
+            ctx.body = { success: false, message: 'Token无效或已过期' }
+            return
+        }
+
+        const { address } = ctx.query
+        const normalizedAddress = String(address || '').trim()
+        if (!normalizedAddress) {
+            ctx.status = 400
+            ctx.body = { success: false, message: 'address不能为空' }
+            return
+        }
+
+        const geo = await getLocationByAddress(normalizedAddress)
+        if (!geo) {
+            ctx.status = 400
+            ctx.body = { success: false, message: '无法获取该地址的坐标' }
+            return
+        }
+
+        ctx.body = {
+            success: true,
+            data: {
+                location: geo.location,
+                adcode: geo.adcode,
+                address: geo.formattedAddress || normalizedAddress
+            }
+        }
+    } catch (error) {
+        console.error('地理编码错误：', error)
+        ctx.status = 500
+        ctx.body = { success: false, message: '地理编码失败，请重试' }
+    }
+})
+
 /**
  * 获取路线规划
  * @param {string} type - 路线类型: driving(驾车), walking(步行), bicycling(骑行), electrobike(电动车), transit(公交)
@@ -356,6 +403,8 @@ const getLocationByAddress = async (address) => {
  * @param {string} destination - 终点经纬度 "lng,lat"
  * @param {object} options - 其他选项
  */
+
+
 const getRoute = async (type, origin, destination, options = {}) => {
     try {
         let url = ''
