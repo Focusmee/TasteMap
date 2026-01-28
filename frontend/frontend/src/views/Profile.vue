@@ -22,6 +22,7 @@
           <el-steps :active="active" align-center>
             <el-step title="基础" />
             <el-step title="目标" />
+            <el-step title="健康" />
             <el-step title="过敏原" />
             <el-step title="偏好" />
           </el-steps>
@@ -72,11 +73,30 @@
             </div>
 
             <div v-else-if="active===2">
+              <el-form :model="form" label-width="110px">
+                <el-form-item label="健康情况">
+                  <el-checkbox-group v-model="form.conditions">
+                    <el-checkbox v-for="c in conditionOpts" :key="c.value" :label="c.value">{{ c.label }}</el-checkbox>
+                  </el-checkbox-group>
+                </el-form-item>
+                <el-form-item label="饮食方式">
+                  <el-select v-model="form.diet_style" style="width:260px">
+                    <el-option label="普通" value="normal" />
+                    <el-option label="素食" value="vegetarian" />
+                    <el-option label="纯素" value="vegan" />
+                    <el-option label="低糖/低碳" value="low_carb" />
+                    <el-option label="低盐" value="low_salt" />
+                  </el-select>
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <div v-else-if="active===3">
               <div class="tip">可多选，系统会在推荐和识别结果中标红提醒。</div>
               <el-check-tag
                 v-for="a in allergenOpts"
                 :key="a"
-                :checked="form.allergens.includes(a)"
+                :checked="form.allergies.includes(a)"
                 @change="(v)=>toggleAllergen(a,v)"
                 style="margin:8px 8px 0 0"
               >{{ a }}</el-check-tag>
@@ -105,12 +125,82 @@
 
           <div class="step-actions">
             <el-button :disabled="active===0" @click="active--">上一步</el-button>
-            <el-button v-if="active<3" type="primary" @click="active++">下一步</el-button>
+            <el-button v-if="active<4" type="primary" @click="active++">下一步</el-button>
             <el-button v-else type="primary" @click="save" :loading="saving">保存画像</el-button>
           </div>
         </el-card>
 
-        <el-card class="panel" shadow="never">
+                <div class="side">
+          <el-card class="panel role-card" shadow="never">
+            <div class="role-head">
+              <div class="role-title">健康角色卡</div>
+              <div class="role-sub">RPG 风格实时属性展示</div>
+            </div>
+
+            <div class="role-body">
+              <div class="identity">
+                <div class="avatar">{{ avatarLetter }}</div>
+                <div class="id-item">
+                  <div class="id-key">👤 昵称</div>
+                  <div class="id-val">{{ nicknameDisplay }}</div>
+                </div>
+                <div class="id-item">
+                  <div class="id-key">🎂 年龄</div>
+                  <div class="id-val">{{ form.age ?? '-' }}</div>
+                </div>
+                <div class="id-item">
+                  <div class="id-key">📏 身高体重</div>
+                  <div class="id-val">{{ form.height ?? '-' }}cm / {{ form.weight ?? '-' }}kg</div>
+                </div>
+                <div class="id-item">
+                  <div class="id-key">⚖️ BMI</div>
+                  <div class="id-val">
+                    {{ bmiText }}
+                    <span class="badge" :class="`badge-${bmiStatus.tone}`">{{ bmiStatus.label }}</span>
+                  </div>
+                </div>
+                <div class="id-item">
+                  <div class="id-key">🎯 当前目标</div>
+                  <div class="id-val">{{ goalLabel }}</div>
+                </div>
+              </div>
+
+              <div class="attrs">
+                <div class="attr">
+                  <div class="attr-head">
+                    <div>🔋 能量需求</div>
+                    <div class="attr-text">目标 {{ form.calorie_target ?? '-' }} kcal</div>
+                  </div>
+                  <el-progress :percentage="caloriePercent" :show-text="false" :color="calorieColor" />
+                </div>
+                <div class="attr">
+                  <div class="attr-head">
+                    <div>💪 活跃度</div>
+                    <div class="attr-text">{{ activityMeta.label }}</div>
+                  </div>
+                  <el-progress :percentage="activityMeta.percent" :show-text="false" :color="activityColor" />
+                </div>
+                <div class="attr">
+                  <div class="attr-head">
+                    <div>⚖️ 体型状态</div>
+                    <div class="attr-text">
+                      <span class="badge" :class="`badge-${bmiStatus.tone}`">{{ bmiStatus.label }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="attr">
+                  <div class="attr-head">
+                    <div>🧠 饮食模式</div>
+                    <div class="attr-text">
+                      <span class="tag">{{ dietStyleLabel }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </el-card>
+
+<el-card class="panel" shadow="never">
           <div class="panel-head">
             <div class="t">健康概览</div>
             <div class="d">近 7 天饮食与出行综合评分</div>
@@ -145,13 +235,14 @@
             </template>
           </el-alert>
         </el-card>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import NavBar from '@/components/NavBar.vue'
 import { profileApi } from '@/api'
@@ -168,6 +259,14 @@ const activityOpts = [
   { label: '高', value: 'high' }
 ]
 
+const conditionOpts = [
+  { label: '高血压', value: 'hypertension' },
+  { label: '糖尿病/控糖', value: 'diabetes' },
+  { label: '高血脂', value: 'hyperlipidemia' },
+  { label: '痛风', value: 'gout' },
+  { label: '肠胃敏感', value: 'sensitive_gut' }
+]
+
 const allergenOpts = ['花生', '坚果', '海鲜', '鸡蛋', '牛奶', '小麦', '大豆', '芝麻']
 const prefSeed = ['少油', '少盐', '少糖', '清淡', '不辣', '高蛋白']
 const allergenCustom = ref('')
@@ -181,24 +280,88 @@ const form = ref({
   goal: 'balanced',
   calorie_target: 2000,
   activity: 'mid',
-  allergens: [],
+  conditions: [],
+  diet_style: 'normal',
+  allergies: [],
   preferences: [],
   scenes: []
 })
 
 const overview = ref({})
+const calorieColor = '#2563eb'
+const activityColor = '#f59e0b'
+
+const nicknameDisplay = computed(() => form.value.nickname?.trim() || '未命名探索者')
+const avatarLetter = computed(() => nicknameDisplay.value[0]?.toUpperCase() || '?')
+
+const bmi = computed(() => {
+  const h = Number(form.value.height)
+  const w = Number(form.value.weight)
+  if (!h || !w) return null
+  const m = h / 100
+  return w / (m * m)
+})
+
+const bmiText = computed(() => (bmi.value ? bmi.value.toFixed(1) : '-'))
+
+const bmiStatus = computed(() => {
+  if (!bmi.value) return { label: '未知', tone: 'muted' }
+  if (bmi.value < 18.5) return { label: '偏瘦', tone: 'blue' }
+  if (bmi.value < 24) return { label: '正常区间', tone: 'green' }
+  if (bmi.value < 28) return { label: '偏胖', tone: 'orange' }
+  return { label: '肥胖', tone: 'red' }
+})
+
+const goalLabel = computed(() => {
+  const map = {
+    cut: '减脂',
+    bulk: '增肌',
+    low_sugar: '控糖',
+    low_salt: '低盐',
+    balanced: '均衡'
+  }
+  return map[form.value.goal] || '未知'
+})
+
+const caloriePercent = computed(() => {
+  const target = Number(form.value.calorie_target) || 0
+  const base = 2400
+  const pct = Math.round((target / base) * 100)
+  return Math.max(0, Math.min(100, pct))
+})
+
+const activityMeta = computed(() => {
+  const map = {
+    low: { label: '低', percent: 35 },
+    mid: { label: '中', percent: 65 },
+    high: { label: '高', percent: 90 }
+  }
+  return map[form.value.activity] || { label: '未知', percent: 0 }
+})
+
+const dietStyleLabel = computed(() => {
+  const map = {
+    normal: '普通型饮食者',
+    vegetarian: '素食',
+    vegan: '纯素',
+    low_carb: '低糖/低碳',
+    low_salt: '低盐'
+  }
+  return map[form.value.diet_style] || '未知'
+})
+
 
 const toggleAllergen = (a, checked) => {
-  const arr = new Set(form.value.allergens)
+  const arr = new Set(form.value.allergies)
   if (checked) arr.add(a)
   else arr.delete(a)
-  form.value.allergens = Array.from(arr)
+  form.value.allergies = Array.from(arr)
 }
 
 const addCustom = () => {
   const t = allergenCustom.value.trim()
   if (!t) return
-  if (!form.value.allergens.includes(t)) form.value.allergens.push(t)
+  if (!form.value.allergies.includes(t)) form.value.allergies.push(t)
   allergenCustom.value = ''
 }
 
@@ -266,6 +429,7 @@ onBeforeUnmount(() => {
 .sub{margin:6px 0 0;color:$text-secondary;}
 .actions{display:flex;gap:10px;}
 .grid{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;}
+.side{display:flex;flex-direction:column;gap:16px;}
 .panel{border-radius:14px;}
 .panel-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;}
 .panel-head .t{font-weight:800;}
@@ -283,9 +447,33 @@ onBeforeUnmount(() => {
 .s .k{font-size:12px;color:$text-secondary;}
 .s .v{font-size:18px;font-weight:800;margin-top:6px;}
 .chart{height:260px;}
+
+.role-card{background:linear-gradient(135deg,#f8fafc 0%, #eef2ff 60%, #e0f2fe 100%);border:1px solid #e0e7ff;}
+.role-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:12px;}
+.role-title{font-size:18px;font-weight:900;}
+.role-sub{font-size:12px;color:$text-secondary;}
+.role-body{display:grid;grid-template-columns:1fr 1.2fr;gap:16px;}
+.identity{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;}
+.avatar{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#fef3c7,#bfdbfe);display:flex;align-items:center;justify-content:center;font-weight:900;color:#1f2937;margin-bottom:10px;font-size:20px;}
+.id-item{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed #e5e7eb;font-size:13px;}
+.id-item:last-child{border-bottom:0;}
+.id-key{color:$text-secondary;}
+.id-val{font-weight:700;display:flex;align-items:center;gap:8px;}
+.attrs{display:flex;flex-direction:column;gap:12px;}
+.attr{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;}
+.attr-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:13px;}
+.attr-text{color:$text-secondary;}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;}
+.badge-green{background:#dcfce7;color:#166534;}
+.badge-blue{background:#dbeafe;color:#1d4ed8;}
+.badge-orange{background:#ffedd5;color:#9a3412;}
+.badge-red{background:#fee2e2;color:#991b1b;}
+.badge-muted{background:#f3f4f6;color:#6b7280;}
+.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;background:#eef2ff;color:#3730a3;font-size:12px;font-weight:700;}
 @media (max-width: 980px){
   .container{padding:18px 16px;}
   .grid{grid-template-columns:1fr;}
   .stats{grid-template-columns:1fr;}
+  .role-body{grid-template-columns:1fr;}
 }
 </style>
