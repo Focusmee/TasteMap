@@ -232,12 +232,24 @@ export const travelApi = {
     return api.post('/travel/save-plan', planData)
   },
 
-  // 保存为足迹（本质上也是一条出行计划，status=footprint）
-  saveFootprint: (planData) => {
-    return api.post('/travel/save-plan', { ...(planData || {}), status: 'footprint' })
+  
+  // ===== 地图地点标记（关联美食知识库） =====
+  // 获取某个地点已标记的食物
+  getPoiFoods: (poi_id, poi_source = 'amap') => {
+    return api.get('/travel/poi-foods', { params: { poi_id, poi_source } })
   },
 
-  // 获取出行计划列表
+  // 批量获取多个地点的标记（用于渲染地图/列表）
+  batchPoiFoods: (items = []) => {
+    return api.post('/travel/poi-foods/batch', { items })
+  },
+
+  // 保存某个地点的标记（会覆盖该地点原有标记）
+  savePoiFoods: (payload) => {
+    return api.post('/travel/poi-foods', payload)
+  },
+
+// 获取出行计划列表
   getPlans: (page = 1, size = 10, status = '', keyword = '') => {
     return api.get('/travel/plans', {
       params: { page, size, status, keyword }

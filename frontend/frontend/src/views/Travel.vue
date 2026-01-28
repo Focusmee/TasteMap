@@ -5,7 +5,64 @@
             <el-card>
                 <template #header>
                     <h2>出行规划</h2>
+                
+    <!-- 地点标记美食（关联知识库） -->
+    <el-drawer v-model="foodTagDialogVisible" title="地点美食标记" size="420px" :with-header="true">
+        <div v-if="foodTagTarget" class="food-tag-panel">
+            <div class="poi-head">
+                <div class="poi-name">{{ foodTagTarget.name }}</div>
+                <div class="poi-addr">{{ foodTagTarget.address }}</div>
+                <div class="poi-meta">
+                    <el-tag size="small" type="info">{{ foodTagTarget.poi_source }}</el-tag>
+                </div>
+            </div>
+
+            <el-input v-model="foodKeyword" placeholder="搜索知识库食物（名称/标签）" clearable @change="() => { foodPage = 1; loadFoodCandidates(); }">
+                <template #append>
+                    <el-button @click="() => { foodPage = 1; loadFoodCandidates(); }">搜索</el-button>
                 </template>
+            </el-input>
+
+            <div class="food-list">
+                <el-checkbox-group v-model="selectedFoodIds">
+                    <div v-for="f in foodList" :key="f.id" class="food-item">
+                        <el-checkbox :label="f.id">
+                            <div class="food-item-inner">
+                                <img v-if="f.image_url" :src="f.image_url" class="food-img" />
+                                <div class="food-info">
+                                    <div class="food-title">{{ f.name }}</div>
+                                    <div class="food-sub">
+                                        <span>{{ f.category || '未分类' }}</span>
+                                        <span style="margin-left:8px;">{{ f.calories }} 千卡/100g</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </el-checkbox>
+                    </div>
+                </el-checkbox-group>
+
+                <el-empty v-if="!foodList || foodList.length === 0" description="暂无数据" />
+            </div>
+
+            <div class="food-pager">
+                <el-pagination
+                    background
+                    layout="prev, pager, next"
+                    :page-size="foodSize"
+                    :total="foodTotal"
+                    :current-page="foodPage"
+                    @current-change="(p) => { foodPage = p; loadFoodCandidates(); }"
+                />
+            </div>
+
+            <div class="drawer-actions">
+                <el-button @click="foodTagDialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="savePoiFoodTags">保存标记</el-button>
+            </div>
+        </div>
+    </el-drawer>
+
+</template>
 
                 <div class="destination-input">
                     <el-input v-model="destination" placeholder="请输入目的地（如：北京市动物园）" size="large"
@@ -255,10 +312,6 @@
                                     <el-button size="small" @click="clearPlannedRoute" :disabled="!routePlanned">
                                         清除路线
                                     </el-button>
-                                    <el-button size="small" type="success" @click="saveFootprint" :loading="savingFootprint"
-                                        :disabled="!routePlanned">
-                                        保存足迹
-                                    </el-button>
                                     <el-button size="small" :type="markingMode ? 'danger' : 'default'"
                                         @click="toggleMarkingMode">
                                         {{ markingMode ? '退出标记' : '标记地点' }}
@@ -269,17 +322,12 @@
                                     选择餐厅或标记地点后即可规划路线
                                 </div>
                                 <div v-else class="route-stops">
-                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop"
-                                        draggable="true"
-                                        @dragstart="onStopDragStart(index)"
-                                        @dragover.prevent
-                                        @drop="onStopDrop(index)">
+                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop">
                                         <div class="route-index">{{ index + 1 }}</div>
                                         <div class="route-info">
                                             <div class="route-name">{{ stop.name }}</div>
                                             <div class="route-address">{{ stop.address || '地址未知' }}</div>
                                         </div>
-                                        <el-tag size="small" type="info" effect="plain" class="drag-hint">拖拽排序</el-tag>
                                         <el-button size="small" link type="danger" @click="removeStop(stop.id)">
                                             移除
                                         </el-button>
@@ -391,7 +439,7 @@ import { Location, Guide, LocationFilled, ArrowDown, ArrowUp } from '@element-pl
 import NavBar from '@/components/NavBar.vue'
 import { useTravelStore } from '@/stores/travel'
 import { useRecognitionStore } from '@/stores/recognition'
-import { travelApi } from '@/api'
+import { travelApi, knowledgeApi } from '@/api'
 import { getCurrentLocation, formatLocation } from '@/utils/location'
 import { loadAmapScript } from '@/utils/amap'
 
@@ -403,7 +451,6 @@ const recognitionStore = useRecognitionStore()
 const destination = ref('')
 const loading = ref(false)
 const saving = ref(false)
-const savingFootprint = ref(false)
 const routeType = ref('driving')
 const currentLocation = ref(null)
 const originMode = ref('current')
@@ -424,8 +471,17 @@ const restaurantKeyword = ref('')
 const selectedCategory = ref('')
 const sortRule = ref('distance')
 const selectedStops = ref([])
-const draggingStopIndex = ref(null)
 const markingMode = ref(false)
+const foodTagDialogVisible = ref(false)
+const foodTagTarget = ref(null) // { poi_id, poi_source, name, address, location }
+const poiFoodsMap = ref({}) // key: `${source}:${poi_id}` => food list
+const foodKeyword = ref('')
+const foodPage = ref(1)
+const foodSize = ref(12)
+const foodTotal = ref(0)
+const foodList = ref([])
+const selectedFoodIds = ref([])
+
 const routePlanned = ref(false)
 const useCurrentLocationAsOrigin = ref(true)
 const routeSegments = ref([])
@@ -564,6 +620,119 @@ const formatDuration = (duration) => {
         return `${hours}小时${minutes}分钟`
     }
 }
+const buildPoiKey = (poi_id, poi_source = 'amap') => `${poi_source}:${poi_id}`
+
+const loadFoodCandidates = async () => {
+    try {
+        const res = await knowledgeApi.list({
+            keyword: foodKeyword.value,
+            page: foodPage.value,
+            size: foodSize.value
+        })
+        if (res?.success) {
+            foodList.value = res.data?.list || []
+            foodTotal.value = res.data?.total || 0
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
+const openFoodTagDialog = async (poi, poi_source = 'amap') => {
+    const poi_id = String(poi?.id ?? poi?.poi_id ?? '')
+    if (!poi_id) return
+
+    foodTagTarget.value = {
+        poi_id,
+        poi_source,
+        name: poi?.name || '',
+        address: poi?.address || '',
+        location: poi?.location || ''
+    }
+
+    // 预加载候选食物列表
+    foodKeyword.value = ''
+    foodPage.value = 1
+    await loadFoodCandidates()
+
+    // 拉取该地点已标记的食物
+    try {
+        const r = await travelApi.getPoiFoods(poi_id, poi_source)
+        if (r?.success) {
+            selectedFoodIds.value = r.data?.food_ids || []
+            const key = buildPoiKey(poi_id, poi_source)
+            poiFoodsMap.value = { ...(poiFoodsMap.value || {}), [key]: r.data?.list || [] }
+        } else {
+            selectedFoodIds.value = []
+        }
+    } catch (e) {
+        selectedFoodIds.value = []
+    }
+
+    foodTagDialogVisible.value = true
+}
+
+const savePoiFoodTags = async () => {
+    if (!foodTagTarget.value) return
+    try {
+        const payload = {
+            poi_id: foodTagTarget.value.poi_id,
+            poi_source: foodTagTarget.value.poi_source,
+            poi_name: foodTagTarget.value.name,
+            poi_location: foodTagTarget.value.location,
+            food_ids: selectedFoodIds.value || []
+        }
+        const r = await travelApi.savePoiFoods(payload)
+        if (r?.success) {
+            // 更新缓存 + 重新刷新地图标注颜色
+            const key = buildPoiKey(payload.poi_id, payload.poi_source)
+            const selected = (foodList.value || []).filter(f => (selectedFoodIds.value || []).includes(f.id))
+            // 注意：候选列表可能不包含全部已选（翻页），所以再批量拉一下保证一致
+            try {
+                const b = await travelApi.getPoiFoods(payload.poi_id, payload.poi_source)
+                if (b?.success) {
+                    poiFoodsMap.value = { ...(poiFoodsMap.value || {}), [key]: b.data?.list || [] }
+                } else {
+                    poiFoodsMap.value = { ...(poiFoodsMap.value || {}), [key]: selected }
+                }
+            } catch {
+                poiFoodsMap.value = { ...(poiFoodsMap.value || {}), [key]: selected }
+            }
+
+            ElMessage.success('已标记到该地点')
+            foodTagDialogVisible.value = false
+            // 触发一次地图刷新，让marker颜色/label更新
+            updateMapMarkers(currentLocation.value, nearbyRestaurants.value, { preserveView: true, preserveRoute: true })
+        } else {
+            ElMessage.error(r?.message || '保存失败')
+        }
+    } catch (e) {
+        ElMessage.error(e?.message || '保存失败')
+    }
+}
+
+const refreshPoiFoodsForCurrent = async () => {
+    // 批量获取当前展示的地点标记（用于渲染颜色/提示）
+    const items = []
+
+    for (const r of (nearbyRestaurants.value || [])) {
+        if (r?.id) items.push({ poi_id: String(r.id), poi_source: 'amap' })
+    }
+    for (const s of (selectedStops.value || [])) {
+        if (s?.id) items.push({ poi_id: String(s.id), poi_source: String(s.source || 'custom') })
+    }
+
+    if (items.length === 0) return
+    try {
+        const res = await travelApi.batchPoiFoods(items)
+        if (res?.success) {
+            poiFoodsMap.value = { ...(poiFoodsMap.value || {}), ...(res.data?.map || {}) }
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
 
 const waitForAMap = (timeout = 5000) => {
     return new Promise((resolve, reject) => {
@@ -868,6 +1037,7 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
         default: '#2f74ff',
         selected: '#f59e0b',
         planned: '#22c55e',
+        tagged: '#f59e0b',
         current: '#ef4444'
     }
 
@@ -898,21 +1068,33 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
                 position: loc,
                 title: rest.name,
                 label: stopIndex ? { content: String(stopIndex), direction: 'top' } : undefined,
-                icon: selectedIdSet.has(rest.id)
-                    ? getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
-                    : getCircleIcon(markerColors.default)
+                icon: (() => {
+                    const key = buildPoiKey(rest.id, 'amap')
+                    const hasFood = ((poiFoodsMap.value || {})[key] || []).length > 0
+                    if (selectedIdSet.has(rest.id)) {
+                        return getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
+                    }
+                    return getCircleIcon(hasFood ? markerColors.tagged : markerColors.default)
+                })()
             })
             marker.on('click', () => {
-                if (!mapInfoWindow) return
-                const content = `
+                // 点击标记：打开信息窗 + 可直接标记美食
+                if (mapInfoWindow) {
+                    const key = buildPoiKey(rest.id, 'amap')
+                    const foods = (poiFoodsMap.value || {})[key] || []
+                    const foodText = foods.length > 0 ? foods.slice(0, 3).map(f => f.name).join('、') + (foods.length > 3 ? '…' : '') : '未标记'
+                    const content = `
                     <div style="font-size:12px;line-height:1.4;">
                         <div style="font-weight:600;margin-bottom:4px;">${rest.name}</div>
                         <div style="color:#666;margin-bottom:2px;">${rest.address || ''}</div>
                         <div style="color:#409EFF;">${formatDistance(rest.distance || 0)}</div>
+                        <div style="color:#111;margin-top:4px;">美食标记：${foodText}</div>
                     </div>
                 `
                 mapInfoWindow.setContent(content)
-                mapInfoWindow.open(mapInstance, loc)
+                    mapInfoWindow.open(mapInstance, loc)
+                }
+                openFoodTagDialog(rest, 'amap')
             })
             return marker
         })
@@ -924,15 +1106,37 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
             const loc = parseLocation(stop.location)
             if (!loc) return null
             const stopIndex = stopIndexById.get(stop.id)
-            return new AMap.Marker({
+            const marker = new AMap.Marker({
                 position: loc,
                 title: stop.name,
                 label: stopIndex ? { content: String(stopIndex), direction: 'top' } : {
                     content: stop.name,
                     direction: 'top'
                 },
-                icon: getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
+                icon: (() => {
+                    const key = buildPoiKey(stop.id, String(stop.source || 'custom'))
+                    const hasFood = ((poiFoodsMap.value || {})[key] || []).length > 0
+                    return getCircleIcon(hasFood ? markerColors.tagged : (plannedHighlight ? markerColors.planned : markerColors.selected))
+                })()
             })
+            marker.on('click', () => {
+                if (mapInfoWindow) {
+                    const key = buildPoiKey(stop.id, String(stop.source || 'custom'))
+                    const foods = (poiFoodsMap.value || {})[key] || []
+                    const foodText = foods.length > 0 ? foods.slice(0, 3).map(f => f.name).join('、') + (foods.length > 3 ? '…' : '') : '未标记'
+                    const content = `
+                        <div style="font-size:12px;line-height:1.4;">
+                            <div style="font-weight:600;margin-bottom:4px;">${stop.name}</div>
+                            <div style="color:#666;margin-bottom:2px;">${stop.address || ''}</div>
+                            <div style="color:#111;margin-top:4px;">美食标记：${foodText}</div>
+                        </div>
+                    `
+                    mapInfoWindow.setContent(content)
+                    mapInfoWindow.open(mapInstance, loc)
+                }
+                openFoodTagDialog(stop, String(stop.source || 'custom'))
+            })
+            return marker
         })
         .filter(Boolean)
 
@@ -1256,31 +1460,6 @@ const removeStop = (stopId) => {
     updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
 }
 
-// ====== 站点拖拽排序 ======
-const onStopDragStart = (index) => {
-    draggingStopIndex.value = index
-}
-
-const onStopDrop = async (dropIndex) => {
-    const fromIndex = draggingStopIndex.value
-    draggingStopIndex.value = null
-    if (fromIndex === null || fromIndex === undefined) return
-    if (fromIndex === dropIndex) return
-    if (fromIndex < 0 || dropIndex < 0) return
-    if (fromIndex >= selectedStops.value.length || dropIndex >= selectedStops.value.length) return
-
-    const next = [...selectedStops.value]
-    const [moved] = next.splice(fromIndex, 1)
-    next.splice(dropIndex, 0, moved)
-    selectedStops.value = next
-
-    // 如果已经规划过路线，排序变化后提示用户重新规划（也可以自动重算）
-    if (routePlanned.value) {
-        clearRouteOverlay()
-        ElMessage.info('站点顺序已更新，请重新点击「规划路线」生成新的分段路线')
-    }
-}
-
 const planRestaurantRoute = async () => {
     if (useCurrentLocationAsOrigin.value) {
         const origin = await ensureOriginLocation()
@@ -1543,63 +1722,6 @@ const saveCompletePlan = async () => {
         console.error('Save plan error:', error)
     } finally {
         saving.value = false
-    }
-}
-
-// 保存“规划好的路线(站点顺序 + 分段路线)”为足迹
-const saveFootprint = async () => {
-    if (!routePlanned.value || routePointList.value.length === 0) {
-        ElMessage.warning('请先选择站点并规划路线')
-        return
-    }
-
-    savingFootprint.value = true
-    try {
-        const now = new Date()
-        const yyyy = now.getFullYear()
-        const mm = String(now.getMonth() + 1).padStart(2, '0')
-        const dd = String(now.getDate()).padStart(2, '0')
-
-        const planData = {
-            rec_id: route.query.rec_id ? parseInt(route.query.rec_id) : null,
-            plan_name: `足迹-${destination.value || '路线'}-${yyyy}-${mm}-${dd}`,
-            destination: destination.value || (routePointList.value[routePointList.value.length - 1]?.name || '路线'),
-            origin_location: currentLocation.value
-                ? formatLocation(currentLocation.value.lng, currentLocation.value.lat)
-                : '',
-            destination_location: '',
-            route_type: 'driving',
-            weather_info: currentWeatherInfo.value || weatherInfo.value || {},
-            route_info: {
-                type: 'multi_stop',
-                use_origin: useCurrentLocationAsOrigin.value,
-                points: routePointList.value,
-                segments: routeSegments.value,
-                polyline_points: lastRoutePoints
-                    ? lastRoutePoints.map((p) => ({ lng: p.getLng?.() ?? p.lng, lat: p.getLat?.() ?? p.lat }))
-                    : []
-            },
-            recommended_restaurants: [],
-            attractions: [],
-            daily_budget: 0,
-            total_calories: 0,
-            plan_days: 1,
-            plan_summary: `足迹：${routePointList.value.map(p => p.name).join(' → ')}`,
-            status: 'footprint'
-        }
-
-        // 后端已经支持 status 字段（footprint/draft/done），这里直接走 savePlan
-        const res = await travelApi.savePlan(planData)
-        if (res.success) {
-            ElMessage.success('足迹保存成功')
-            router.push('/history')
-        } else {
-            ElMessage.error(res.message || '足迹保存失败')
-        }
-    } catch (error) {
-        ElMessage.error(error.message || '足迹保存失败')
-    } finally {
-        savingFootprint.value = false
     }
 }
 
@@ -1927,12 +2049,6 @@ onMounted(async () => {
                     gap: 8px;
                     padding-bottom: 8px;
                     border-bottom: 1px dashed #eee;
-                    cursor: grab;
-                    user-select: none;
-
-                    &:active {
-                        cursor: grabbing;
-                    }
 
                     &:last-child {
                         border-bottom: none;
@@ -2230,4 +2346,19 @@ onMounted(async () => {
     font-size: 12px;
 }
 
+
+.food-tag-panel{display:flex;flex-direction:column;gap:12px}
+.poi-head{padding:4px 0 8px;border-bottom:1px solid #f0f0f0}
+.poi-name{font-weight:600;font-size:14px;color:#111}
+.poi-addr{margin-top:4px;font-size:12px;color:#666;line-height:1.4}
+.poi-meta{margin-top:8px}
+.food-list{margin-top:6px;flex:1;overflow:auto;max-height:55vh;padding-right:6px}
+.food-item{padding:8px 6px;border-bottom:1px dashed #eee}
+.food-item-inner{display:flex;gap:10px;align-items:center}
+.food-img{width:44px;height:44px;border-radius:10px;object-fit:cover;border:1px solid #f0f0f0}
+.food-info{display:flex;flex-direction:column;gap:4px}
+.food-title{font-size:13px;color:#111;font-weight:600}
+.food-sub{font-size:12px;color:#666}
+.food-pager{display:flex;justify-content:center;margin-top:8px}
+.drawer-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:10px}
 </style>

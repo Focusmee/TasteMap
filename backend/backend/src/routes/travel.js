@@ -805,8 +805,7 @@ router.post('/save-plan', async (ctx) => {
             daily_budget,
             total_calories,
             plan_days,
-            plan_summary,
-            status
+            plan_summary
         } = ctx.request.body
 
         if (!destination) {
@@ -816,16 +815,12 @@ router.post('/save-plan', async (ctx) => {
         }
 
         // 插入出行计划
-        const normalizedStatus = ['draft', 'footprint', 'done'].includes(String(status || '').trim())
-            ? String(status).trim()
-            : 'draft'
-
         const [result] = await pool.execute(
             `INSERT INTO travel_plan (
           user_id, rec_id, plan_name, destination, origin_location, destination_location,
           route_type, weather_info, route_info, recommended_restaurants, attractions,
           daily_budget, total_calories, plan_days, plan_summary, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
             [
                 decoded.userId,
                 rec_id || null,
@@ -841,8 +836,7 @@ router.post('/save-plan', async (ctx) => {
                 daily_budget || 0,
                 total_calories || 0,
                 plan_days || 1,
-                plan_summary || '',
-                normalizedStatus
+                plan_summary || ''
             ]
         )
 
@@ -1131,5 +1125,194 @@ router.delete('/plans', async (ctx) => {
         ctx.body = { success: false, message: '清空失败，请重试' }
     }
 })
+
+
+// =========================
+// 地点标记美食知识库（足迹/地图标记）
+// 表建议：poi_food_tag（见下方SQL）
+// =========================
+const getAuthUserId = async (ctx) => {
+    const token = ctx.headers.authorization?.replace('Bearer ', '')
+    if (!token) return null
+    const decoded = await verifyToken(token)
+    return decoded?.id || decoded?.user_id || decoded?.userId || null
+}
+
+router.get('/poi-foods', async (ctx) => {
+    try {
+        const userId = await getAuthUserId(ctx)
+        if (!userId) {
+            ctx.status = 401
+            ctx.body = { success: false, message: '未授权，请先登录' }
+            return
+        }
+
+        const poi_id = String(ctx.query.poi_id || '').trim()
+        const poi_source = String(ctx.query.poi_source || 'amap').trim() || 'amap'
+        if (!poi_id) {
+            ctx.status = 400
+            ctx.body = { success: false, message: 'poi_id 不能为空' }
+            return
+        }
+
+        const [rows] = await pool.execute(
+            `SELECT fk.id, fk.name, fk.category, fk.calories, fk.image_url
+             FROM poi_food_tag pft
+             JOIN food_knowledge fk ON fk.id = pft.food_id
+             WHERE pft.user_id = ? AND pft.poi_id = ? AND pft.poi_source = ?
+             ORDER BY fk.calories ASC, fk.id DESC`,
+            [userId, poi_id, poi_source]
+        )
+
+        ctx.body = { success: true, data: { list: rows, food_ids: rows.map(r => r.id) } }
+    } catch (err) {
+        console.error('poi-foods error:', err)
+        ctx.status = 500
+        ctx.body = { success: false, message: '服务器错误' }
+    }
+})
+
+router.post('/poi-foods', async (ctx) => {
+    const conn = await pool.getConnection()
+    try {
+        const userId = await getAuthUserId(ctx)
+        if (!userId) {
+            ctx.status = 401
+            ctx.body = { success: false, message: '未授权，请先登录' }
+            return
+        }
+
+        const body = ctx.request.body || {}
+        const poi_id = String(body.poi_id || '').trim()
+        const poi_source = String(body.poi_source || 'amap').trim() || 'amap'
+        const poi_name = String(body.poi_name || '').trim()
+        const poi_location = String(body.poi_location || body.location || '').trim() // "lng,lat"
+        const food_ids = Array.isArray(body.food_ids) ? body.food_ids : []
+
+        if (!poi_id) {
+            ctx.status = 400
+            ctx.body = { success: false, message: 'poi_id 不能为空' }
+            return
+        }
+
+        const ids = food_ids.map(n => Number(n)).filter(Boolean)
+
+        await conn.beginTransaction()
+
+        // 先清空该地点旧标记
+        await conn.execute(
+            'DELETE FROM poi_food_tag WHERE user_id = ? AND poi_id = ? AND poi_source = ?',
+            [userId, poi_id, poi_source]
+        )
+
+        // 再插入新标记
+        if (ids.length > 0) {
+            const values = ids.map(() => '(?,?,?,?,?,?)').join(',')
+            const params = []
+            for (const fid of ids) {
+                params.push(userId, poi_id, poi_source, fid, poi_name || null, poi_location || null)
+            }
+            await conn.execute(
+                `INSERT INTO poi_food_tag (user_id, poi_id, poi_source, food_id, poi_name, poi_location)
+                 VALUES ${values}`,
+                params
+            )
+        }
+
+        await conn.commit()
+        ctx.body = { success: true }
+    } catch (err) {
+        await conn.rollback()
+        console.error('save poi-foods error:', err)
+        ctx.status = 500
+        ctx.body = { success: false, message: '服务器错误' }
+    } finally {
+        conn.release()
+    }
+})
+
+router.post('/poi-foods/batch', async (ctx) => {
+    try {
+        const userId = await getAuthUserId(ctx)
+        if (!userId) {
+            ctx.status = 401
+            ctx.body = { success: false, message: '未授权，请先登录' }
+            return
+        }
+
+        const items = ctx.request.body?.items
+        if (!Array.isArray(items) || items.length === 0) {
+            ctx.body = { success: true, data: { map: {} } }
+            return
+        }
+
+        const normalized = items
+            .map(it => ({
+                poi_id: String(it.poi_id || '').trim(),
+                poi_source: String(it.poi_source || 'amap').trim() || 'amap'
+            }))
+            .filter(it => it.poi_id)
+
+        if (normalized.length === 0) {
+            ctx.body = { success: true, data: { map: {} } }
+            return
+        }
+
+        // MySQL 支持 (a,b) IN ((?,?),(?,?)) 这种行构造器
+        const tuplePlaceholders = normalized.map(() => '(?,?)').join(',')
+        const tupleParams = []
+        for (const it of normalized) {
+            tupleParams.push(it.poi_id, it.poi_source)
+        }
+
+        const [rows] = await pool.execute(
+            `SELECT pft.poi_id, pft.poi_source, fk.id AS food_id, fk.name, fk.category, fk.calories, fk.image_url
+             FROM poi_food_tag pft
+             JOIN food_knowledge fk ON fk.id = pft.food_id
+             WHERE pft.user_id = ?
+               AND (pft.poi_id, pft.poi_source) IN (${tuplePlaceholders})
+             ORDER BY fk.calories ASC, fk.id DESC`,
+            [userId, ...tupleParams]
+        )
+
+        const map = {}
+        for (const r of rows) {
+            const key = `${r.poi_source}:${r.poi_id}`
+            if (!map[key]) map[key] = []
+            map[key].push({
+                id: r.food_id,
+                name: r.name,
+                category: r.category,
+                calories: r.calories,
+                image_url: r.image_url
+            })
+        }
+
+        ctx.body = { success: true, data: { map } }
+    } catch (err) {
+        console.error('batch poi-foods error:', err)
+        ctx.status = 500
+        ctx.body = { success: false, message: '服务器错误' }
+    }
+})
+
+/**
+ * 建表SQL（执行一次即可）：
+ * 
+ * CREATE TABLE IF NOT EXISTS poi_food_tag (
+ *   id INT AUTO_INCREMENT PRIMARY KEY,
+ *   user_id INT NOT NULL,
+ *   poi_id VARCHAR(64) NOT NULL,
+ *   poi_source VARCHAR(32) NOT NULL DEFAULT 'amap',
+ *   food_id INT NOT NULL,
+ *   poi_name VARCHAR(255) NULL,
+ *   poi_location VARCHAR(64) NULL,
+ *   create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+ *   UNIQUE KEY uk_user_poi_food (user_id, poi_id, poi_source, food_id),
+ *   INDEX idx_user_poi (user_id, poi_id, poi_source),
+ *   INDEX idx_food (food_id)
+ * ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ */
+
 
 module.exports = router
