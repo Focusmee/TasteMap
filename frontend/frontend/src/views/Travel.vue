@@ -20,12 +20,29 @@
                 <div class="ai-hero-grid">
                     <div class="ai-card ai-food-card">
                         <div class="ai-card-title">{{ aiFoodInsight.title }}</div>
+                        <div class="ai-card-actions">
+                            <div class="ai-card-status" v-if="aiAdviceLoading">AI 建议生成中...</div>
+                            <div class="ai-card-status is-error" v-else-if="aiAdviceError">{{ aiAdviceError }}</div>
+                            <el-button size="small" @click="loadAiAdvice" :loading="aiAdviceLoading">
+                                刷新AI建议
+                            </el-button>
+                        </div>
                         <div class="ai-card-sub">根据你的状态：</div>
                         <div class="ai-card-list">
                             <div v-for="(reason, idx) in aiFoodInsight.reasons" :key="idx" class="ai-card-item">✔ {{ reason }}</div>
                         </div>
                         <div class="ai-card-reco">👉 推荐你选择：{{ aiFoodInsight.recommendation }}</div>
                         <div class="ai-card-note">👉 这不是筛选条件，是 AI 决策解释</div>
+                        <div v-if="aiDecisionExplanation" class="ai-card-explain">
+                            <div class="ai-card-explain-title">AI 决策解释</div>
+                            <div class="ai-card-explain-summary">{{ aiDecisionExplanation.summary }}</div>
+                            <div v-if="aiDecisionExplanation.evidence?.length" class="ai-card-explain-list">
+                                <div v-for="(item, idx) in aiDecisionExplanation.evidence" :key="`ev-${idx}`" class="ai-card-explain-item">• {{ item }}</div>
+                            </div>
+                            <div v-if="aiDecisionExplanation.cautions?.length" class="ai-card-explain-caution">
+                                注意：<span v-for="(item, idx) in aiDecisionExplanation.cautions" :key="`ct-${idx}`">{{ item }}</span>
+                            </div>
+                        </div>
                     </div>
                     <div class="ai-card ai-trip-card">
                         <div class="ai-card-title">{{ aiTripInsight.title }}</div>
@@ -532,7 +549,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Location, Guide, LocationFilled, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
@@ -564,6 +581,10 @@ const weatherInfo = ref(null)
 const currentWeatherInfo = ref(null)
 const routeInfo = ref(null)
 const recommendationInfo = ref(null)
+const aiAdvice = ref(null)
+const aiAdviceLoading = ref(false)
+const aiAdviceError = ref('')
+const aiAdviceKey = ref('')
 const showAllSteps = ref(false) // 控制是否展开所有路线步骤
 const mapContainer = ref(null)
 const nearbyRestaurants = ref([])
@@ -679,23 +700,43 @@ const recommendedCategories = computed(() => {
 })
 
 
-const aiFoodInsight = computed(() => ({
-    title: '🍜 Ju Jin，今晚适合轻油饮食',
-    reasons: aiReasonSeeds,
-    recommendation: '川菜中的清炒类、蒸菜类'
-}))
+const aiFoodInsight = computed(() => {
+    const fallback = {
+        title: '🍜 今晚适合轻油饮食',
+        reasons: aiReasonSeeds,
+        recommendation: '川菜中的清炒类、蒸菜类'
+    }
+    const data = aiAdvice.value?.food_insight
+    if (!data) return fallback
+    return {
+        title: data.title || fallback.title,
+        reasons: Array.isArray(data.reasons) && data.reasons.length ? data.reasons : fallback.reasons,
+        recommendation: data.recommendation || fallback.recommendation
+    }
+})
 
 const aiTripInsight = computed(() => {
     const now = new Date()
     const depart = new Date(now.getTime() + 20 * 60 * 1000)
-    return {
+    const fallback = {
         title: '🚗 今晚行程建议',
         destination: destination.value || '川菜聚餐',
         departAt: formatClock(depart) || '18:20',
         traffic: aiTravelTips[0],
         dish: aiDishSeeds[0] || '清炒虾仁'
     }
+    const data = aiAdvice.value?.trip_insight
+    if (!data) return fallback
+    return {
+        title: data.title || fallback.title,
+        destination: data.destination || fallback.destination,
+        departAt: data.depart_at || data.departAt || fallback.departAt,
+        traffic: data.traffic || fallback.traffic,
+        dish: data.dish || fallback.dish
+    }
 })
+
+const aiDecisionExplanation = computed(() => aiAdvice.value?.decision_explanation || null)
 
 const displayedSteps = computed(() => {
     if (!routeInfo.value || !routeInfo.value.steps) {
@@ -1791,6 +1832,82 @@ const applyCategoryFilter = async (value) => {
     await refreshNearbyRestaurants()
 }
 
+const getMealPeriod = (dateObj = new Date()) => {
+    const d = dateObj instanceof Date ? dateObj : new Date(dateObj)
+    const hour = d.getHours()
+    if (hour >= 5 && hour < 10) return '早餐'
+    if (hour >= 10 && hour < 14) return '中餐'
+    if (hour >= 14 && hour < 17) return '下午茶'
+    if (hour >= 17 && hour < 21) return '晚餐'
+    return '夜宵'
+}
+
+const formatLocalTime = (dateObj = new Date()) => {
+    const d = dateObj instanceof Date ? dateObj : new Date(dateObj)
+    if (Number.isNaN(d.getTime())) return ''
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mi = String(d.getMinutes()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
+}
+
+const buildAiAdvicePayload = () => {
+    const now = new Date()
+    const routeSummary = routeInfo.value
+        ? {
+            distance: routeInfo.value.distance,
+            duration: routeInfo.value.duration,
+            summary: routeInfo.value.summary
+        }
+        : null
+    return {
+        destination: destination.value.trim(),
+        route_type: routeType.value,
+        origin_address: currentLocation.value?.address || '',
+        weather: weatherSource.value || null,
+        route: routeSummary,
+        local_time: formatLocalTime(now),
+        meal_period: getMealPeriod(now)
+    }
+}
+
+const loadAiAdvice = async () => {
+    const token = localStorage.getItem('token')
+    if (!token) {
+        aiAdviceError.value = '未登录，无法生成AI建议'
+        return
+    }
+    aiAdviceLoading.value = true
+    aiAdviceError.value = ''
+    try {
+        const payload = buildAiAdvicePayload()
+        console.debug('AI advice request payload:', payload)
+        const res = await travelApi.getAiAdvice(payload)
+        if (res?.success) {
+            aiAdvice.value = res.data
+        } else {
+            aiAdviceError.value = res?.message || 'AI建议获取失败'
+        }
+    } catch (error) {
+        aiAdviceError.value = error?.message || 'AI建议获取失败'
+    } finally {
+        aiAdviceLoading.value = false
+    }
+}
+
+const buildAdviceKey = () => {
+    const weatherTag = weatherInfo.value?.reporttime || weatherInfo.value?.temperature || ''
+    const routeTag = routeInfo.value?.distance || routeInfo.value?.duration || ''
+    return [
+        destination.value.trim(),
+        routeType.value,
+        weatherTag,
+        routeTag
+    ].join('|')
+}
+
 // 加载出行信息
 const loadTravelInfo = async () => {
     if (!destination.value.trim()) {
@@ -1799,6 +1916,8 @@ const loadTravelInfo = async () => {
     }
 
     loading.value = true
+    aiAdvice.value = null
+    aiAdviceError.value = ''
     showAllSteps.value = false // 重新查询时重置展开状态
     try {
         const origin = await ensureOriginLocation()
@@ -1829,6 +1948,7 @@ const loadTravelInfo = async () => {
         } else {
             ElMessage.warning(routeRes.message || '获取路线信息失败')
         }
+        await loadAiAdvice()
     } catch (error) {
         ElMessage.error(error.message || '加载出行信息失败')
         console.error('Travel info error:', error)
@@ -1865,6 +1985,7 @@ const handleRouteTypeChange = async () => {
             } else {
                 ElMessage.warning(routeRes.message || '获取路线信息失败')
             }
+            await loadAiAdvice()
         } catch (error) {
             ElMessage.error(error.message || '获取路线信息失败')
         } finally {
@@ -1970,8 +2091,12 @@ const saveFootprint = async () => {
 
 onMounted(async () => {
     try {
+        if (!destination.value) {
+            destination.value = travelStore.getCachedDestination() || ''
+        }
         await getLocation()
         await loadNearbyRestaurants()
+        await loadAiAdvice()
     } catch (error) {
         console.error('初始化定位失败:', error)
     }
@@ -1995,6 +2120,19 @@ onMounted(async () => {
         // 可以根据识别结果推荐目的地
     }
 })
+
+watch(
+    [destination, routeType, weatherInfo, routeInfo],
+    async () => {
+        if (!destination.value.trim()) return
+        if (!weatherInfo.value || !routeInfo.value) return
+        if (aiAdviceLoading.value) return
+        const key = buildAdviceKey()
+        if (key && aiAdviceKey.value === key && aiAdvice.value) return
+        aiAdviceKey.value = key
+        await loadAiAdvice()
+    }
+)
 </script>
 
 <style scoped lang="scss">
@@ -2112,7 +2250,7 @@ onMounted(async () => {
 
         .destination-input :deep(.el-input__wrapper) {
             padding: 6px 12px;
-            border-radius: 18px;
+            
             border: 1px solid rgba(148, 163, 184, 0.25);
             background: rgba(255, 255, 255, 0.92);
             box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
@@ -2833,6 +2971,14 @@ onMounted(async () => {
 .ai-card-item{font-size:12px;color:#0f172a;}
 .ai-card-reco{margin-top:10px;font-size:13px;color:#0f172a;font-weight:700;}
 .ai-card-note{margin-top:8px;font-size:12px;color:#475569;}
+.ai-card-actions{margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.ai-card-status{margin-top:6px;font-size:12px;color:#0ea5e9;font-weight:600;}
+.ai-card-status.is-error{color:#ef4444;}
+.ai-card-explain{margin-top:10px;padding:10px;border-radius:12px;background:rgba(255,255,255,0.8);border:1px solid rgba(148,163,184,0.18);display:grid;gap:6px;}
+.ai-card-explain-title{font-size:12px;font-weight:700;color:#0f172a;}
+.ai-card-explain-summary{font-size:12px;color:#334155;}
+.ai-card-explain-list{display:grid;gap:4px;font-size:12px;color:#1f2937;}
+.ai-card-explain-caution{font-size:11px;color:#b45309;display:flex;gap:6px;flex-wrap:wrap;}
 .ai-trip-grid{display:grid;gap:8px;margin-top:10px;}
 .ai-trip-item{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:#0f172a;}
 .ai-trip-item strong{color:#111827;}

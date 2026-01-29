@@ -227,6 +227,11 @@ export const travelApi = {
     return api.post('/travel/recommend-plan', { rec_id })
   },
 
+  // AI 行程决策驾驶舱建议
+  getAiAdvice: (payload = {}) => {
+    return api.post('/travel/ai-advice', payload)
+  },
+
   // 保存出行计划
   savePlan: (planData) => {
     return api.post('/travel/save-plan', planData)

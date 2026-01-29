@@ -13,6 +13,290 @@ const AMAP_REGEOCODE_URL = 'https://restapi.amap.com/v3/geocode/regeo' // 逆地
 const AMAP_PLACE_AROUND_URL = 'https://restapi.amap.com/v3/place/around' // 周边搜索API
 const AMAP_DIRECTION_BASE = 'https://restapi.amap.com/v5/direction' // 路线规划API基础地址
 
+// Gemini API 配置
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim()
+const GEMINI_API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com').trim()
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim()
+
+const safeJsonParse = (value, fallback = null) => {
+    if (!value) return fallback
+    if (typeof value === 'object') return value
+    try {
+        return JSON.parse(value)
+    } catch {
+        return fallback
+    }
+}
+
+const normalizeProfile = (profile) => {
+    if (!profile || typeof profile !== 'object') return profile
+    const allergies = Array.isArray(profile.allergies)
+        ? profile.allergies
+        : Array.isArray(profile.allergens)
+            ? profile.allergens
+            : []
+    return {
+        ...profile,
+        allergies,
+        conditions: Array.isArray(profile.conditions) ? profile.conditions : [],
+        preferences: Array.isArray(profile.preferences) ? profile.preferences : []
+    }
+}
+
+const summarizeRoute = (routeInfo) => {
+    if (!routeInfo || typeof routeInfo !== 'object') return null
+    const distance = Number(routeInfo.distance || routeInfo.total_distance || 0)
+    const duration = Number(routeInfo.duration || routeInfo.total_time || 0)
+    return {
+        distance_m: Number.isFinite(distance) ? distance : 0,
+        duration_s: Number.isFinite(duration) ? duration : 0,
+        summary: routeInfo.summary || ''
+    }
+}
+
+const formatClock = (dateObj) => {
+    const d = dateObj instanceof Date ? dateObj : new Date(dateObj)
+    if (Number.isNaN(d.getTime())) return ''
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${hh}:${mm}`
+}
+
+const buildFallbackAdvice = (input, insights) => {
+    const now = new Date()
+    const depart = new Date(now.getTime() + 20 * 60 * 1000)
+    const topFood = insights?.diet?.top_foods?.[0]?.food_name || ''
+    const destination = input?.destination || insights?.travel?.top_destinations?.[0]?.destination || '附近美食地标'
+    const traffic = input?.route?.duration_s > 3600 ? '可能拥堵' : '较顺畅'
+    const reasons = []
+    const mealPeriod = input?.meal_period ? `当前为${input.meal_period}` : ''
+    if (insights?.diet?.avg_daily_calories) {
+        reasons.push(`近7天日均摄入约${Math.round(insights.diet.avg_daily_calories)} kcal`)
+    }
+    if (insights?.travel?.total_plans_30d) {
+        reasons.push(`近30天已有${insights.travel.total_plans_30d}次出行记录`)
+    }
+    if (mealPeriod) {
+        reasons.push(mealPeriod)
+    }
+    if (topFood) {
+        reasons.push(`最近常吃：${topFood}`)
+    }
+    if (reasons.length === 0) {
+        reasons.push('结合你的历史饮食和出行记录综合判断')
+    }
+
+    return {
+        food_insight: {
+            title: '今晚适合清爽低负担',
+            reasons,
+            recommendation: topFood ? `优先选择${topFood}或清淡烹饪` : '优先选择清淡、低油菜品'
+        },
+        trip_insight: {
+            title: '今晚行程建议',
+            destination,
+            depart_at: formatClock(depart) || '18:30',
+            traffic,
+            dish: topFood || '清爽蒸菜'
+        },
+        decision_explanation: {
+            summary: '结合近期饮食趋势、出行偏好与当前路线信息生成建议。',
+            evidence: reasons.slice(0, 3),
+            cautions: ['如天气或路况变化，请灵活调整出发时间。']
+        }
+    }
+}
+
+const normalizeAiAdvice = (raw, fallback) => {
+    const safe = raw && typeof raw === 'object' ? raw : {}
+    const food = safe.food_insight || {}
+    const trip = safe.trip_insight || {}
+    const exp = safe.decision_explanation || {}
+    const coerceText = (value, alt) => (typeof value === 'string' && value.trim() ? value.trim() : alt)
+    const coerceList = (value, alt) => {
+        if (!Array.isArray(value)) return alt
+        const list = value.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim())
+        return list.length ? list.slice(0, 6) : alt
+    }
+    return {
+        food_insight: {
+            title: coerceText(food.title, fallback.food_insight.title),
+            reasons: coerceList(food.reasons, fallback.food_insight.reasons),
+            recommendation: coerceText(food.recommendation, fallback.food_insight.recommendation)
+        },
+        trip_insight: {
+            title: coerceText(trip.title, fallback.trip_insight.title),
+            destination: coerceText(trip.destination, fallback.trip_insight.destination),
+            depart_at: coerceText(trip.depart_at, fallback.trip_insight.depart_at),
+            traffic: coerceText(trip.traffic, fallback.trip_insight.traffic),
+            dish: coerceText(trip.dish, fallback.trip_insight.dish)
+        },
+        decision_explanation: {
+            summary: coerceText(exp.summary, fallback.decision_explanation.summary),
+            evidence: coerceList(exp.evidence, fallback.decision_explanation.evidence),
+            cautions: coerceList(exp.cautions, fallback.decision_explanation.cautions)
+        }
+    }
+}
+
+const buildGeminiPayload = (input, insights) => {
+        const payload = {
+            destination: input?.destination || '',
+            route_type: input?.route_type || '',
+            origin_address: input?.origin_address || '',
+            local_time: input?.local_time || '',
+            meal_period: input?.meal_period || '',
+            weather: input?.weather || null,
+            route: input?.route || null,
+            user_profile: insights?.profile || null,
+            diet_summary: insights?.diet || null,
+            travel_summary: insights?.travel || null
+        }
+    const systemInstruction = [
+        '你是出行与美食的AI决策助手，需要基于用户真实历史数据给出建议。',
+        '务必结合用户所在当地时间与餐段（早餐/中餐/晚餐/夜宵）来调整建议。',
+        '请严格输出 JSON 对象，不要包含任何多余文字、Markdown 或代码块。',
+        'JSON 必须包含以下结构：',
+        '{',
+        '  "food_insight": { "title": "...", "reasons": ["..."], "recommendation": "..." },',
+        '  "trip_insight": { "title": "...", "destination": "...", "depart_at": "HH:MM", "traffic": "...", "dish": "..." },',
+        '  "decision_explanation": { "summary": "...", "evidence": ["..."], "cautions": ["..."] }',
+        '}',
+        '要求：reasons/evidence/cautions 为字符串数组；内容简洁、可执行；不要输出隐私数据。',
+        '回复语言：中文。'
+    ].join('\n')
+
+    return {
+        system_instruction: {
+            parts: [{ text: systemInstruction }]
+        },
+        contents: [
+            {
+                role: 'user',
+                parts: [{ text: `以下是用户与场景数据(JSON)：\n${JSON.stringify(payload)}` }]
+            }
+        ],
+        generationConfig: {
+            temperature: 0.6,
+            maxOutputTokens: 800,
+            responseMimeType: 'application/json'
+        }
+    }
+}
+
+const callGemini = async (body) => {
+    if (!GEMINI_API_KEY) {
+        throw new Error('Gemini API key missing')
+    }
+    const base = GEMINI_API_BASE.replace(/\/+$/, '')
+    const modelPath = GEMINI_MODEL.startsWith('models/')
+        ? GEMINI_MODEL
+        : `models/${GEMINI_MODEL}`
+    const url = `${base}/v1beta/${modelPath}:generateContent`
+    const response = await axios.post(
+        url,
+        body,
+        {
+            headers: {
+                'x-goog-api-key': GEMINI_API_KEY,
+                'Content-Type': 'application/json'
+            },
+            timeout: 12000
+        }
+    )
+    const content = response?.data?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    if (!content) {
+        throw new Error('Gemini response empty')
+    }
+    return content
+}
+
+const extractJsonObject = (text) => {
+    if (!text || typeof text !== 'string') return null
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    return safeJsonParse(match[0], null)
+}
+
+const getUserInsights = async (userId) => {
+    const [[profileRow]] = await pool.execute(
+        'SELECT profile FROM user_profile WHERE user_id = ? LIMIT 1',
+        [userId]
+    )
+    const rawProfile = safeJsonParse(profileRow?.profile, null)
+    const profile = normalizeProfile(rawProfile)
+
+    const [[dietSummary]] = await pool.execute(
+        `SELECT 
+            IFNULL(SUM(calories),0) AS total_calories,
+            IFNULL(AVG(calories),0) AS avg_meal_calories,
+            IFNULL(SUM(calories) / NULLIF(COUNT(DISTINCT log_date),0),0) AS avg_daily_calories,
+            COUNT(*) AS total_logs,
+            COUNT(DISTINCT log_date) AS days
+         FROM diet_log
+         WHERE user_id = ?
+           AND log_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)`,
+        [userId]
+    )
+
+    const [topFoodRows] = await pool.execute(
+        `SELECT food_name, COUNT(*) AS cnt, IFNULL(SUM(calories),0) AS total_calories
+         FROM diet_log
+         WHERE user_id = ?
+           AND log_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         GROUP BY food_name
+         ORDER BY cnt DESC, total_calories DESC
+         LIMIT 5`,
+        [userId]
+    )
+
+    const [[travelSummary]] = await pool.execute(
+        `SELECT 
+            COUNT(*) AS total_plans_30d,
+            MAX(create_time) AS last_plan_time
+         FROM travel_plan
+         WHERE user_id = ?
+           AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+        [userId]
+    )
+
+    const [topDestRows] = await pool.execute(
+        `SELECT destination, COUNT(*) AS cnt
+         FROM travel_plan
+         WHERE user_id = ?
+           AND destination IS NOT NULL
+           AND destination <> ''
+         GROUP BY destination
+         ORDER BY cnt DESC
+         LIMIT 3`,
+        [userId]
+    )
+
+    return {
+        profile,
+        diet: {
+            total_calories: Number(dietSummary?.total_calories || 0),
+            avg_meal_calories: Number(dietSummary?.avg_meal_calories || 0),
+            avg_daily_calories: Number(dietSummary?.avg_daily_calories || 0),
+            days: Number(dietSummary?.days || 0),
+            total_logs: Number(dietSummary?.total_logs || 0),
+            top_foods: (topFoodRows || []).map((row) => ({
+                food_name: row.food_name,
+                count: Number(row.cnt || 0),
+                total_calories: Number(row.total_calories || 0)
+            }))
+        },
+        travel: {
+            total_plans_30d: Number(travelSummary?.total_plans_30d || 0),
+            last_plan_time: travelSummary?.last_plan_time || null,
+            top_destinations: (topDestRows || []).map((row) => ({
+                destination: row.destination,
+                count: Number(row.cnt || 0)
+            }))
+        }
+    }
+}
+
 /**
  * ??????API????adcode
  * @param {string} cityName - ????
@@ -1293,6 +1577,71 @@ router.post('/poi-foods/batch', async (ctx) => {
         console.error('batch poi-foods error:', err)
         ctx.status = 500
         ctx.body = { success: false, message: '服务器错误' }
+    }
+})
+
+// AI 行程决策驾驶舱建议
+router.post('/ai-advice', async (ctx) => {
+    try {
+        const token = ctx.headers.authorization?.replace('Bearer ', '')
+        if (!token) {
+            ctx.status = 401
+            ctx.body = { success: false, message: '未授权，请先登录' }
+            return
+        }
+
+        const decoded = await verifyToken(token)
+        if (!decoded) {
+            ctx.status = 401
+            ctx.body = { success: false, message: 'Token无效或已过期' }
+            return
+        }
+
+        const body = ctx.request.body || {}
+        const input = {
+            destination: String(body.destination || '').trim(),
+            route_type: String(body.route_type || '').trim(),
+            origin_address: String(body.origin_address || '').trim(),
+            local_time: String(body.local_time || '').trim(),
+            meal_period: String(body.meal_period || '').trim(),
+            weather: body.weather || null,
+            route: summarizeRoute(body.route || null)
+        }
+
+        const insights = await getUserInsights(decoded.userId)
+        const fallback = buildFallbackAdvice(input, insights)
+        let advice = fallback
+        let source = 'fallback'
+        let aiError = null
+
+        if (GEMINI_API_KEY) {
+            try {
+                const body = buildGeminiPayload(input, insights)
+                const content = await callGemini(body)
+                const parsed = safeJsonParse(content, null) || extractJsonObject(content)
+                advice = normalizeAiAdvice(parsed, fallback)
+                source = 'ai'
+            } catch (err) {
+                aiError = err?.message || 'Gemini request failed'
+                advice = fallback
+                source = 'fallback'
+            }
+        }
+
+        ctx.body = {
+            success: true,
+            data: {
+                ...advice,
+                meta: {
+                    source,
+                    ai_error: aiError
+                }
+            }
+        }
+    } catch (error) {
+        console.error('AI travel advice error:', error)
+        ctx.status = 500
+        ctx.body = { success: false, message: 'AI建议生成失败，请稍后重试' }
     }
 })
 
