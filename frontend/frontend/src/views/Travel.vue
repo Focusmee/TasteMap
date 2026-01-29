@@ -2,67 +2,69 @@
     <div class="travel">
         <NavBar />
         <div class="travel-content">
-            <el-card>
+            <el-card class="hero-card">
                 <template #header>
-                    <h2>出行规划</h2>
-                
-    <!-- 地点标记美食（关联知识库） -->
-    <el-drawer v-model="foodTagDialogVisible" title="地点美食标记" size="420px" :with-header="true">
-        <div v-if="foodTagTarget" class="food-tag-panel">
-            <div class="poi-head">
-                <div class="poi-name">{{ foodTagTarget.name }}</div>
-                <div class="poi-addr">{{ foodTagTarget.address }}</div>
-                <div class="poi-meta">
-                    <el-tag size="small" type="info">{{ foodTagTarget.poi_source }}</el-tag>
-                </div>
-            </div>
-
-            <el-input v-model="foodKeyword" placeholder="搜索知识库食物（名称/标签）" clearable @change="() => { foodPage = 1; loadFoodCandidates(); }">
-                <template #append>
-                    <el-button @click="() => { foodPage = 1; loadFoodCandidates(); }">搜索</el-button>
-                </template>
-            </el-input>
-
-            <div class="food-list">
-                <el-checkbox-group v-model="selectedFoodIds">
-                    <div v-for="f in foodList" :key="f.id" class="food-item">
-                        <el-checkbox :label="f.id">
-                            <div class="food-item-inner">
-                                <img v-if="f.image_url" :src="f.image_url" class="food-img" />
-                                <div class="food-info">
-                                    <div class="food-title">{{ f.name }}</div>
-                                    <div class="food-sub">
-                                        <span>{{ f.category || '未分类' }}</span>
-                                        <span style="margin-left:8px;">{{ f.calories }} 千卡/100g</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </el-checkbox>
+                    <div class="hero-header">
+                        <div class="hero-title-group">
+                            <div class="hero-title">AI 行程决策驾驶舱</div>
+                            <div class="hero-sub">不是在看地图找餐厅，而是 AI 在带你探索适合你的美食。</div>
+                        </div>
+                        <div class="hero-status">
+                            <span class="hero-pill">AI 在线</span>
+                            <span class="hero-pill">场景感知</span>
+                            <span class="hero-pill">出行 × 饮食</span>
+                        </div>
                     </div>
-                </el-checkbox-group>
+                </template>
 
-                <el-empty v-if="!foodList || foodList.length === 0" description="暂无数据" />
-            </div>
+                <div class="ai-hero-grid">
+                    <div class="ai-card ai-food-card">
+                        <div class="ai-card-title">{{ aiFoodInsight.title }}</div>
+                        <div class="ai-card-sub">根据你的状态：</div>
+                        <div class="ai-card-list">
+                            <div v-for="(reason, idx) in aiFoodInsight.reasons" :key="idx" class="ai-card-item">✔ {{ reason }}</div>
+                        </div>
+                        <div class="ai-card-reco">👉 推荐你选择：{{ aiFoodInsight.recommendation }}</div>
+                        <div class="ai-card-note">👉 这不是筛选条件，是 AI 决策解释</div>
+                    </div>
+                    <div class="ai-card ai-trip-card">
+                        <div class="ai-card-title">{{ aiTripInsight.title }}</div>
+                        <div class="ai-trip-grid">
+                            <div class="ai-trip-item">
+                                <span>📍 目的地</span>
+                                <strong>{{ aiTripInsight.destination }}</strong>
+                            </div>
+                            <div class="ai-trip-item">
+                                <span>🕒 最佳出发时间</span>
+                                <strong>{{ aiTripInsight.departAt }}</strong>
+                            </div>
+                            <div class="ai-trip-item">
+                                <span>🚦 当前路况</span>
+                                <strong>{{ aiTripInsight.traffic }}</strong>
+                            </div>
+                            <div class="ai-trip-item">
+                                <span>🍽 到达后推荐菜</span>
+                                <strong>{{ aiTripInsight.dish }}</strong>
+                            </div>
+                        </div>
+                        <div class="ai-card-note">这不是导航页，这是生活决策页</div>
+                    </div>
+                </div>
 
-            <div class="food-pager">
-                <el-pagination
-                    background
-                    layout="prev, pager, next"
-                    :page-size="foodSize"
-                    :total="foodTotal"
-                    :current-page="foodPage"
-                    @current-change="(p) => { foodPage = p; loadFoodCandidates(); }"
-                />
-            </div>
-
-            <div class="drawer-actions">
-                <el-button @click="foodTagDialogVisible = false">取消</el-button>
-                <el-button type="primary" @click="savePoiFoodTags">保存标记</el-button>
-            </div>
-        </div>
-    </el-drawer>
-
-</template>
+                <div class="hero-strip">
+                    <div v-if="destination" class="hero-chip">
+                        <span class="chip-label">目的地</span>
+                        <span class="chip-value">{{ destination }}</span>
+                    </div>
+                    <div v-if="weatherInfo" class="hero-chip">
+                        <span class="chip-label">气温</span>
+                        <span class="chip-value">{{ weatherInfo.temperature }}℃</span>
+                    </div>
+                    <div v-if="routeType" class="hero-chip">
+                        <span class="chip-label">方式</span>
+                        <span class="chip-value">{{ getRouteTypeName(routeType) }}</span>
+                    </div>
+                </div>
 
                 <div class="destination-input">
                     <el-input v-model="destination" placeholder="请输入目的地（如：北京市动物园）" size="large"
@@ -188,13 +190,13 @@
                 </div>
 
                 <!-- 天气信息 -->
-                <el-card v-if="weatherInfo" class="info-card" shadow="never">
+                <el-card v-if="weatherInfo" class="info-card weather-card" shadow="never">
                     <div class="weather-content">
                         <div class="weather-icon-wrapper">
                             <span class="weather-emoji">{{ getWeatherIcon(weatherInfo.icon) }}</span>
                         </div>
                         <div class="weather-info">
-                            <div class="temperature">{{ weatherInfo.temperature }}℃</div>
+                            <div class="temperature num-roll">{{ weatherInfo.temperature }}℃</div>
                             <div class="weather-text">{{ weatherInfo.weather }}</div>
                             <div class="weather-tip">{{ weatherInfo.tip }}</div>
                             <div v-if="weatherInfo.winddir" class="weather-detail">
@@ -210,10 +212,16 @@
                 <el-card class="map-card" shadow="never">
                     <template #header>
                         <div class="map-header">
-                            <span>美食地图</span>
-                            <el-button size="small" @click="refreshNearbyRestaurants" :loading="loadingRestaurants">
-                                刷新附近餐厅
-                            </el-button>
+                            <div class="map-header-title">
+                                <span>AI 美食探索驾驶舱</span>
+                                <div class="map-sub">地图只是视觉承载，推荐逻辑才是主角</div>
+                            </div>
+                            <div class="map-actions">
+                                <div class="ring-loader" v-show="loading || loadingRestaurants" />
+                                <el-button size="small" @click="refreshNearbyRestaurants" :loading="loadingRestaurants">
+                                    刷新附近餐厅
+                                </el-button>
+                            </div>
                         </div>
                     </template>
                     <div class="map-layout">
@@ -243,6 +251,21 @@
                                     应用筛选
                                 </el-button>
                             </div>
+                            <div class="poi-focus" v-if="selectedPoi">
+                                <div class="poi-focus-head">
+                                    <div class="poi-focus-title">{{ selectedPoi.name }}</div>
+                                    <div class="poi-focus-distance">{{ formatDistance(selectedPoi.distance || 0) }}</div>
+                                </div>
+                                <div class="poi-focus-addr">{{ selectedPoi.address || '地址未知' }}</div>
+                                <div v-if="selectedPoiFoods.length" class="poi-focus-tags">
+                                    <span v-for="food in selectedPoiFoods" :key="food.id || food.name" class="poi-tag">{{ food.name }}</span>
+                                </div>
+                                <div class="poi-focus-actions">
+                                    <el-button size="small" type="primary" @click="addRestaurantStop(selectedPoi)">加入路线</el-button>
+                                    <el-button size="small" @click="openFoodTagDialog(selectedPoi, selectedPoi.poi_source || 'amap')">标记菜品</el-button>
+                                </div>
+                            </div>
+                            <div class="poi-focus poi-focus-empty" v-else>点击地图上的美食地点气泡，可以规划路线</div>
                             <div class="rule-section">
                                 <div class="rule-title">天气出行建议</div>
                                 <div v-if="currentWeatherInfo" class="rule-current">
@@ -309,6 +332,11 @@
                                         :disabled="selectedStops.length === 0">
                                         规划路线
                                     </el-button>
+                                    <el-button size="small" type="success" @click="saveFootprint"
+                                        :disabled="!routePlanned || selectedStops.length === 0"
+                                        :loading="savingFootprint">
+                                        保存足迹
+                                    </el-button>
                                     <el-button size="small" @click="clearPlannedRoute" :disabled="!routePlanned">
                                         清除路线
                                     </el-button>
@@ -322,7 +350,14 @@
                                     选择餐厅或标记地点后即可规划路线
                                 </div>
                                 <div v-else class="route-stops">
-                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop">
+                                    <div v-for="(stop, index) in selectedStops" :key="stop.id" class="route-stop"
+                                        draggable="true" @dragstart="onStopDragStart(index)"
+                                        @dragend="onStopDragEnd" @dragover.prevent="onStopDragOver(index)"
+                                        @drop="onStopDrop(index)" :class="{
+                                            'is-dragging': draggingStopIndex === index,
+                                            'is-drag-over': dragOverIndex === index
+                                        }">
+                                        <span class="route-drag-handle" title="拖动排序">⋮⋮</span>
                                         <div class="route-index">{{ index + 1 }}</div>
                                         <div class="route-info">
                                             <div class="route-name">{{ stop.name }}</div>
@@ -396,6 +431,16 @@
                         </div>
                     </template>
                     <div class="route-content">
+                        <div class="route-visual">
+                            <div class="route-ribbon">
+                                <span class="route-dot">🚗</span>
+                                <span class="route-line"></span>
+                                <span class="route-dot">🅿️</span>
+                                <span class="route-line"></span>
+                                <span class="route-dot">🍽️</span>
+                            </div>
+                            <div class="route-visual-meta">生活路径 · 路线 + 美食点</div>
+                        </div>
                         <div v-if="routeInfo.steps && routeInfo.steps.length > 0" class="route-steps">
                             <!-- 显示前5步或全部步骤（根据展开状态） -->
                             <div v-for="(step, index) in displayedSteps" :key="index" class="route-step">
@@ -428,6 +473,61 @@
                 </el-button>
             </el-card>
         </div>
+
+    <el-drawer v-model="foodTagDialogVisible" title="地点美食标记" size="420px" :with-header="true">
+        <div v-if="foodTagTarget" class="food-tag-panel">
+            <div class="poi-head">
+                <div class="poi-name">{{ foodTagTarget.name }}</div>
+                <div class="poi-addr">{{ foodTagTarget.address }}</div>
+                <div class="poi-meta">
+                    <el-tag size="small" type="info">{{ foodTagTarget.poi_source }}</el-tag>
+                </div>
+            </div>
+
+            <el-input v-model="foodKeyword" placeholder="搜索知识库食物（名称/标签）" clearable @change="() => { foodPage = 1; loadFoodCandidates(); }">
+                <template #append>
+                    <el-button @click="() => { foodPage = 1; loadFoodCandidates(); }">搜索</el-button>
+                </template>
+            </el-input>
+
+            <div class="food-list">
+                <el-checkbox-group v-model="selectedFoodIds">
+                    <div v-for="f in foodList" :key="f.id" class="food-item">
+                        <el-checkbox :label="f.id">
+                            <div class="food-item-inner">
+                                <img v-if="f.image_url" :src="f.image_url" class="food-img" />
+                                <div class="food-info">
+                                    <div class="food-title">{{ f.name }}</div>
+                                    <div class="food-sub">
+                                        <span>{{ f.category || '未分类' }}</span>
+                                        <span style="margin-left:8px;">{{ f.calories }} 千卡/100g</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </el-checkbox>
+                    </div>
+                </el-checkbox-group>
+
+                <el-empty v-if="!foodList || foodList.length === 0" description="暂无数据" />
+            </div>
+
+            <div class="food-pager">
+                <el-pagination
+                    background
+                    layout="prev, pager, next"
+                    :page-size="foodSize"
+                    :total="foodTotal"
+                    :current-page="foodPage"
+                    @current-change="(p) => { foodPage = p; loadFoodCandidates(); }"
+                />
+            </div>
+
+            <div class="drawer-actions">
+                <el-button @click="foodTagDialogVisible = false">取消</el-button>
+                <el-button type="primary" @click="savePoiFoodTags">保存标记</el-button>
+            </div>
+        </div>
+    </el-drawer>
     </div>
 </template>
 
@@ -451,6 +551,7 @@ const recognitionStore = useRecognitionStore()
 const destination = ref('')
 const loading = ref(false)
 const saving = ref(false)
+const savingFootprint = ref(false)
 const routeType = ref('driving')
 const currentLocation = ref(null)
 const originMode = ref('current')
@@ -471,7 +572,10 @@ const restaurantKeyword = ref('')
 const selectedCategory = ref('')
 const sortRule = ref('distance')
 const selectedStops = ref([])
+const selectedPoi = ref(null)
 const markingMode = ref(false)
+const draggingStopIndex = ref(null)
+const dragOverIndex = ref(null)
 const foodTagDialogVisible = ref(false)
 const foodTagTarget = ref(null) // { poi_id, poi_source, name, address, location }
 const poiFoodsMap = ref({}) // key: `${source}:${poi_id}` => food list
@@ -492,6 +596,7 @@ let mapInfoWindow = null
 let drivingInstance = null
 let geocoderInstance = null
 let routeLine = null
+let routeGlowLine = null
 let lastRoutePoints = null
 let markerOverlays = []
 let mapSearchTimer = null
@@ -509,6 +614,11 @@ const restaurantCategories = [
     { label: '烧烤', value: 'bbq' },
     { label: '甜品', value: 'dessert' }
 ]
+
+
+const aiReasonSeeds = ['血脂偏高', '聚餐场景', '今日已摄入 1200 kcal']
+const aiDishSeeds = ['清蒸鲈鱼', '清炒虾仁', '蒸豆腐', '白灼生菜', '清汤牛腩']
+const aiTravelTips = ['较顺畅', '轻微拥堵', '顺畅']
 
 const travelPlanComplete = computed(() => {
     return weatherInfo.value && routeInfo.value
@@ -568,59 +678,97 @@ const recommendedCategories = computed(() => {
     return Array.from(unique.values())
 })
 
-// 计算显示的路线步骤
+
+const aiFoodInsight = computed(() => ({
+    title: '🍜 Ju Jin，今晚适合轻油饮食',
+    reasons: aiReasonSeeds,
+    recommendation: '川菜中的清炒类、蒸菜类'
+}))
+
+const aiTripInsight = computed(() => {
+    const now = new Date()
+    const depart = new Date(now.getTime() + 20 * 60 * 1000)
+    return {
+        title: '🚗 今晚行程建议',
+        destination: destination.value || '川菜聚餐',
+        departAt: formatClock(depart) || '18:20',
+        traffic: aiTravelTips[0],
+        dish: aiDishSeeds[0] || '清炒虾仁'
+    }
+})
+
 const displayedSteps = computed(() => {
     if (!routeInfo.value || !routeInfo.value.steps) {
         return []
     }
 
     const steps = routeInfo.value.steps
-
-    // 如果步骤数小于等于5或已展开，显示全部
     if (steps.length <= 5 || showAllSteps.value) {
         return steps
     }
-
-    // 否则只显示前5步
     return steps.slice(0, 5)
 })
 
-// 获取路线类型名称
 const getRouteTypeName = (type) => {
     const nameMap = {
-        'driving': '驾车',
-        'walking': '步行',
-        'bicycling': '骑行',
-        'electrobike': '电动车',
-        'transit': '公交'
+        driving: '驾车',
+        walking: '步行',
+        bicycling: '骑行',
+        electrobike: '电动车',
+        transit: '公交'
     }
     return nameMap[type] || '路线'
 }
 
-// 格式化距离
 const formatDistance = (distance) => {
-    const dist = parseInt(distance)
+    const dist = parseInt(distance, 10)
     if (dist < 1000) {
         return `${dist}米`
-    } else {
-        return `${(dist / 1000).toFixed(1)}公里`
     }
+    return `${(dist / 1000).toFixed(1)}公里`
 }
 
-// 格式化时长
 const formatDuration = (duration) => {
-    const dur = parseInt(duration)
+    const dur = parseInt(duration, 10)
     if (dur < 60) {
         return `${dur}秒`
-    } else if (dur < 3600) {
-        return `${Math.floor(dur / 60)}分钟`
-    } else {
-        const hours = Math.floor(dur / 3600)
-        const minutes = Math.floor((dur % 3600) / 60)
-        return `${hours}小时${minutes}分钟`
     }
+    if (dur < 3600) {
+        return `${Math.floor(dur / 60)}分钟`
+    }
+    const hours = Math.floor(dur / 3600)
+    const minutes = Math.floor((dur % 3600) / 60)
+    return `${hours}小时${minutes}分钟`
 }
+
+const formatClock = (dateObj) => {
+    const d = dateObj instanceof Date ? dateObj : new Date(dateObj)
+    if (Number.isNaN(d.getTime())) return ''
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${hh}:${mm}`
+}
+
+const formatDateTimeLabel = (dateObj) => {
+    const d = dateObj instanceof Date ? dateObj : new Date(dateObj)
+    if (Number.isNaN(d.getTime())) return ''
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mi = String(d.getMinutes()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
+}
+
 const buildPoiKey = (poi_id, poi_source = 'amap') => `${poi_source}:${poi_id}`
+
+const selectedPoiFoods = computed(() => {
+    if (!selectedPoi.value) return []
+    const poiId = String(selectedPoi.value?.id ?? selectedPoi.value?.poi_id ?? '')
+    if (!poiId) return []
+    const key = buildPoiKey(poiId, selectedPoi.value?.poi_source || 'amap')
+    return poiFoodsMap.value?.[key] || []
+})
 
 const loadFoodCandidates = async () => {
     try {
@@ -801,18 +949,32 @@ const parsePolyline = (polyline) => {
 
 
 const markerIconCache = new Map()
-const buildCircleSvg = (color) => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="${color}" stroke="#ffffff" stroke-width="2"/></svg>`
+const buildFoodBubbleSvg = (color, emoji = '🍜', glow = false) => {
+    const glowFilter = glow
+        ? '<filter id="g"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+        : ''
+    const glowCircle = glow ? '<circle cx="14" cy="14" r="11" fill="rgba(255,255,255,0.35)" />' : ''
+    const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+            ${glowFilter}
+            <g ${glow ? 'filter="url(#g)"' : ''}>
+                ${glowCircle}
+                <circle cx="16" cy="16" r="12" fill="${color}" stroke="#ffffff" stroke-width="2" />
+            </g>
+            <text x="16" y="20" text-anchor="middle" font-size="14">${emoji}</text>
+        </svg>
+    `
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
-const getCircleIcon = (color) => {
-    if (markerIconCache.has(color)) return markerIconCache.get(color)
+const getCircleIcon = (color, emoji = '🍜', glow = false) => {
+    const key = `${color}-${emoji}-${glow ? 'g' : 'n'}`
+    if (markerIconCache.has(key)) return markerIconCache.get(key)
     const icon = new AMap.Icon({
-        size: new AMap.Size(24, 24),
-        image: buildCircleSvg(color),
-        imageSize: new AMap.Size(24, 24)
+        size: new AMap.Size(32, 32),
+        image: buildFoodBubbleSvg(color, emoji, glow),
+        imageSize: new AMap.Size(32, 32)
     })
-    markerIconCache.set(color, icon)
+    markerIconCache.set(key, icon)
     return icon
 }
 
@@ -823,7 +985,11 @@ const clearRouteOverlay = () => {
     if (routeLine && mapInstance) {
         mapInstance.remove(routeLine)
     }
+    if (routeGlowLine && mapInstance) {
+        mapInstance.remove(routeGlowLine)
+    }
     routeLine = null
+    routeGlowLine = null
     lastRoutePoints = null
     routePlanned.value = false
     routeSegments.value = []
@@ -847,14 +1013,20 @@ const drawRouteFromPoints = (points) => {
         throw new Error('Route points are empty')
     }
     lastRoutePoints = points
+    routeGlowLine = new AMap.Polyline({
+        path: points,
+        strokeColor: '#f97316',
+        strokeWeight: 10,
+        strokeOpacity: 0.25
+    })
     routeLine = new AMap.Polyline({
         path: points,
-        strokeColor: '#409EFF',
+        strokeColor: '#38bdf8',
         strokeWeight: 6,
-        strokeOpacity: 0.85
+        strokeOpacity: 0.9
     })
-    mapInstance.add(routeLine)
-    mapInstance.setFitView([routeLine], false, [40, 40, 40, 40])
+    mapInstance.add([routeGlowLine, routeLine])
+    mapInstance.setFitView([routeGlowLine, routeLine], false, [40, 40, 40, 40])
     routePlanned.value = true
 }
 
@@ -1026,6 +1198,19 @@ const ensureDriving = async () => {
     })
 }
 
+const selectPoi = (poi, source = 'amap') => {
+    if (!poi) return
+    selectedPoi.value = {
+        id: poi.id ?? poi.poi_id ?? '',
+        poi_id: poi.poi_id ?? poi.id ?? '',
+        poi_source: poi.poi_source || source,
+        name: poi.name || '推荐餐厅',
+        address: poi.address || '',
+        location: poi.location || '',
+        distance: poi.distance || 0
+    }
+}
+
 const updateMapMarkers = (location, restaurants, options = {}) => {
     if (!mapInstance || !location) return
     const { preserveRoute = false, preserveView = false } = options
@@ -1052,9 +1237,9 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
     const center = [location.lng, location.lat]
     const userMarker = new AMap.Marker({
         position: center,
-        title: '??',
+        title: '当前位置',
         anchor: 'bottom-center',
-        icon: getCircleIcon(markerColors.current)
+        icon: getCircleIcon(markerColors.current, '📍', true)
     })
     markerOverlays.push(userMarker)
     mapInstance.add(userMarker)
@@ -1072,29 +1257,16 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
                     const key = buildPoiKey(rest.id, 'amap')
                     const hasFood = ((poiFoodsMap.value || {})[key] || []).length > 0
                     if (selectedIdSet.has(rest.id)) {
-                        return getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected)
+                        return getCircleIcon(plannedHighlight ? markerColors.planned : markerColors.selected, '🍽️', true)
                     }
-                    return getCircleIcon(hasFood ? markerColors.tagged : markerColors.default)
+                    return getCircleIcon(hasFood ? markerColors.tagged : markerColors.default, hasFood ? '✨' : '🍜', hasFood)
                 })()
             })
             marker.on('click', () => {
-                // 点击标记：打开信息窗 + 可直接标记美食
+                selectPoi({ ...rest, poi_source: 'amap' }, 'amap')
                 if (mapInfoWindow) {
-                    const key = buildPoiKey(rest.id, 'amap')
-                    const foods = (poiFoodsMap.value || {})[key] || []
-                    const foodText = foods.length > 0 ? foods.slice(0, 3).map(f => f.name).join('、') + (foods.length > 3 ? '…' : '') : '未标记'
-                    const content = `
-                    <div style="font-size:12px;line-height:1.4;">
-                        <div style="font-weight:600;margin-bottom:4px;">${rest.name}</div>
-                        <div style="color:#666;margin-bottom:2px;">${rest.address || ''}</div>
-                        <div style="color:#409EFF;">${formatDistance(rest.distance || 0)}</div>
-                        <div style="color:#111;margin-top:4px;">美食标记：${foodText}</div>
-                    </div>
-                `
-                mapInfoWindow.setContent(content)
-                    mapInfoWindow.open(mapInstance, loc)
+                    mapInfoWindow.close()
                 }
-                openFoodTagDialog(rest, 'amap')
             })
             return marker
         })
@@ -1116,25 +1288,14 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
                 icon: (() => {
                     const key = buildPoiKey(stop.id, String(stop.source || 'custom'))
                     const hasFood = ((poiFoodsMap.value || {})[key] || []).length > 0
-                    return getCircleIcon(hasFood ? markerColors.tagged : (plannedHighlight ? markerColors.planned : markerColors.selected))
+                    return getCircleIcon(hasFood ? markerColors.tagged : (plannedHighlight ? markerColors.planned : markerColors.selected), hasFood ? '✨' : '🍽️', hasFood)
                 })()
             })
             marker.on('click', () => {
+                selectPoi({ ...stop, poi_source: stop.poi_source || 'custom' }, stop.poi_source || 'custom')
                 if (mapInfoWindow) {
-                    const key = buildPoiKey(stop.id, String(stop.source || 'custom'))
-                    const foods = (poiFoodsMap.value || {})[key] || []
-                    const foodText = foods.length > 0 ? foods.slice(0, 3).map(f => f.name).join('、') + (foods.length > 3 ? '…' : '') : '未标记'
-                    const content = `
-                        <div style="font-size:12px;line-height:1.4;">
-                            <div style="font-weight:600;margin-bottom:4px;">${stop.name}</div>
-                            <div style="color:#666;margin-bottom:2px;">${stop.address || ''}</div>
-                            <div style="color:#111;margin-top:4px;">美食标记：${foodText}</div>
-                        </div>
-                    `
-                    mapInfoWindow.setContent(content)
-                    mapInfoWindow.open(mapInstance, loc)
+                    mapInfoWindow.close()
                 }
-                openFoodTagDialog(stop, String(stop.source || 'custom'))
             })
             return marker
         })
@@ -1161,7 +1322,6 @@ const updateMapMarkers = (location, restaurants, options = {}) => {
     }
 }
 
-// 获取天气图标
 const getWeatherIcon = (iconType) => {
     const iconMap = {
         'sunny': '☀️',
@@ -1460,6 +1620,38 @@ const removeStop = (stopId) => {
     updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
 }
 
+const onStopDragStart = (index) => {
+    draggingStopIndex.value = index
+    dragOverIndex.value = index
+}
+
+const onStopDragOver = (index) => {
+    dragOverIndex.value = index
+}
+
+const onStopDragEnd = () => {
+    draggingStopIndex.value = null
+    dragOverIndex.value = null
+}
+
+const onStopDrop = async (index) => {
+    const fromIndex = draggingStopIndex.value
+    if (fromIndex === null || fromIndex === undefined) {
+        return
+    }
+    if (fromIndex !== index) {
+        const updated = [...selectedStops.value]
+        const [moved] = updated.splice(fromIndex, 1)
+        updated.splice(index, 0, moved)
+        selectedStops.value = updated
+        updateMapMarkers(currentLocation.value, nearbyRestaurants.value)
+        if (routePlanned.value) {
+            await planRestaurantRoute()
+        }
+    }
+    onStopDragEnd()
+}
+
 const planRestaurantRoute = async () => {
     if (useCurrentLocationAsOrigin.value) {
         const origin = await ensureOriginLocation()
@@ -1725,6 +1917,57 @@ const saveCompletePlan = async () => {
     }
 }
 
+const saveFootprint = async () => {
+    if (selectedStops.value.length === 0 || !routePlanned.value) {
+        ElMessage.warning('请先规划路线后再保存足迹')
+        return
+    }
+
+    const stopNames = selectedStops.value.map((stop) => stop.name).filter(Boolean)
+    const fallbackDestination = stopNames[stopNames.length - 1] || '美食路线'
+    const nowLabel = formatDateTimeLabel(new Date())
+
+    const planData = {
+        rec_id: route.query.rec_id ? parseInt(route.query.rec_id) : null,
+        plan_name: `足迹-${fallbackDestination}-${nowLabel}`,
+        destination: destination.value || fallbackDestination,
+        origin_location: currentLocation.value
+            ? formatLocation(currentLocation.value.lng, currentLocation.value.lat)
+            : '',
+        destination_location: '',
+        route_type: routeType.value,
+        weather_info: weatherInfo.value || {},
+        route_info: {
+            type: 'multi-stop',
+            stops: selectedStops.value,
+            segments: routeSegments.value,
+            points: routePointList.value
+        },
+        recommended_restaurants: [],
+        attractions: [],
+        daily_budget: 0,
+        total_calories: 0,
+        plan_days: 1,
+        plan_summary: stopNames.length ? `足迹路线：${stopNames.join(' → ')}` : '足迹路线'
+    }
+
+    savingFootprint.value = true
+    try {
+        const res = await travelApi.savePlan(planData)
+        if (res.success) {
+            ElMessage.success('足迹已保存')
+            router.push('/history')
+        } else {
+            ElMessage.error(res.message || '足迹保存失败')
+        }
+    } catch (error) {
+        ElMessage.error('足迹保存失败')
+        console.error('Save footprint error:', error)
+    } finally {
+        savingFootprint.value = false
+    }
+}
+
 onMounted(async () => {
     try {
         await getLocation()
@@ -1759,15 +2002,134 @@ onMounted(async () => {
 
 .travel {
     min-height: 100vh;
-    background: $bg-color;
+    background: linear-gradient(135deg, #fff7ed 0%, #eff6ff 45%, #f8fafc 100%);
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    --tm-blue: #1e7dd9;
+    --tm-blue-soft: #e6f2ff;
+    --tm-food: #ff9a4d;
+    --tm-food-soft: #fff0e6;
+    --tm-ink: #0f172a;
+
+    &::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 12% 18%, rgba(255, 154, 77, 0.22), transparent 45%),
+            radial-gradient(circle at 80% 12%, rgba(30, 125, 217, 0.2), transparent 45%),
+            radial-gradient(circle at 60% 80%, rgba(14, 116, 144, 0.12), transparent 55%);
+        opacity: 0.8;
+        pointer-events: none;
+        z-index: 0;
+    }
+
+    &::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background-image: radial-gradient(rgba(30, 125, 217, 0.2) 1px, transparent 1px);
+        background-size: 26px 26px;
+        opacity: 0.25;
+        pointer-events: none;
+        z-index: 0;
+    }
+
+    :deep(.el-card) {
+        border-radius: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(10px);
+    }
+
+    :deep(.el-card__header) {
+        border-bottom: none;
+        padding: 16px 18px 10px;
+        background: linear-gradient(120deg, rgba(255, 154, 77, 0.12), rgba(30, 125, 217, 0.12));
+    }
 
     .travel-content {
         max-width: 1200px;
         margin: 0 auto;
         padding: 24px 20px;
+        position: relative;
+        z-index: 1;
+
+        .hero-card {
+            border-radius: 24px;
+        }
+
+        .hero-card :deep(.el-card__header) {
+            padding: 18px 20px 14px;
+        }
+
+        .hero-card :deep(h2) {
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--tm-ink);
+            letter-spacing: 0.8px;
+            margin: 0;
+        }
+
+        .hero-strip {
+            margin: 6px 0 18px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .hero-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            background: rgba(255, 255, 255, 0.7);
+            box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
+            font-size: 12px;
+            color: $text-secondary;
+        }
+
+        .hero-chip .chip-label {
+            color: #64748b;
+            font-weight: 600;
+        }
+
+        .hero-chip .chip-value {
+            color: var(--tm-ink);
+            font-weight: 700;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
 
         .destination-input {
             margin-bottom: 16px;
+        }
+
+        .destination-input :deep(.el-input__wrapper) {
+            padding: 6px 12px;
+            border-radius: 18px;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            background: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+        }
+
+        .destination-input :deep(.el-input-group__prepend),
+        .destination-input :deep(.el-input-group__append) {
+            background: transparent;
+            border: none;
+            
+        }
+
+        .destination-input :deep(.el-button--primary) {
+            border-radius: 12px;
+            
+            border: none;
+            
         }
 
         .origin-selector {
@@ -1775,6 +2137,11 @@ onMounted(async () => {
             display: flex;
             flex-direction: column;
             gap: 8px;
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            backdrop-filter: blur(6px);
         }
 
         .origin-row {
@@ -1807,6 +2174,7 @@ onMounted(async () => {
 
         .recommendation-card {
             margin-bottom: 16px;
+            background: linear-gradient(120deg, rgba(255, 247, 237, 0.9), rgba(239, 246, 255, 0.9));
 
             .recommendation-content {
                 .recommendation-section {
@@ -1848,34 +2216,79 @@ onMounted(async () => {
                         align-items: center;
                         justify-content: center;
                         gap: 8px;
+                        border-radius: 14px;
+                        border: 1px solid rgba(148, 163, 184, 0.4);
+                        background: rgba(255, 255, 255, 0.8);
+                        color: #1f2937;
+                        transition: all 220ms ease;
+                    }
+
+                    .el-radio-button__original-radio:checked + .el-radio-button__inner {
+                        background: linear-gradient(120deg, var(--tm-blue), #3b82f6);
+                        border-color: transparent;
+                        color: #fff;
+                        box-shadow: 0 12px 20px rgba(30, 125, 217, 0.3);
                     }
                 }
             }
         }
 
-        .map-card {
-            margin-bottom: 16px;
-
-            .map-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 12px;
-            }
-
-            .map-layout {
-                display: grid;
-                grid-template-columns: 2fr 1fr;
-                gap: 16px;
-            }
-
-            .amap-container {
-                width: 100%;
-                height: 360px;
-                border-radius: 12px;
+            .map-card {
+                margin-bottom: 16px;
+                position: relative;
                 overflow: hidden;
-                border: 1px solid #f0f0f0;
-            }
+
+                &::after {
+                    content: '';
+                    position: absolute;
+                    top: -60px;
+                    right: -40px;
+                    width: 160px;
+                    height: 160px;
+                    background: radial-gradient(circle, rgba(255, 154, 77, 0.25), transparent 60%);
+                    opacity: 0.6;
+                    pointer-events: none;
+                }
+
+                .map-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    gap: 12px;
+                    font-weight: 700;
+                    color: var(--tm-ink);
+                }
+
+                .map-actions {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+
+                .ring-loader {
+                    width: 22px;
+                    height: 22px;
+                    border-radius: 50%;
+                    border: 2px solid rgba(30, 125, 217, 0.2);
+                    border-top-color: var(--tm-blue);
+                    animation: ringSpin 1s linear infinite;
+                    box-shadow: 0 6px 12px rgba(30, 125, 217, 0.2);
+                }
+
+                .map-layout {
+                    display: grid;
+                    grid-template-columns: 2fr 1fr;
+                    gap: 16px;
+                }
+
+                .amap-container {
+                    width: 100%;
+                    height: 360px;
+                    border-radius: 12px;
+                    overflow: hidden;
+                    border: 1px solid rgba(148, 163, 184, 0.25);
+                    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+                }
 
             .map-panel {
                 display: flex;
@@ -1891,10 +2304,10 @@ onMounted(async () => {
             }
 
                 .rule-section {
-                    border: 1px solid #f0f0f0;
+                    border: 1px solid rgba(148, 163, 184, 0.2);
                     border-radius: 12px;
                     padding: 12px;
-                    background: #fafafa;
+                    background: linear-gradient(160deg, rgba(255, 247, 237, 0.8), rgba(239, 246, 255, 0.9));
 
                     .rule-title {
                         font-weight: 600;
@@ -1905,8 +2318,8 @@ onMounted(async () => {
                     .rule-current {
                         padding: 8px 10px;
                         border-radius: 10px;
-                        background: #fff;
-                        border: 1px solid #f0f0f0;
+                        background: rgba(255, 255, 255, 0.9);
+                        border: 1px solid rgba(148, 163, 184, 0.2);
                         margin-bottom: 8px;
                     }
 
@@ -1947,11 +2360,11 @@ onMounted(async () => {
                 }
             }
 
-            .restaurant-section {
-                border: 1px solid #f0f0f0;
+                .restaurant-section {
+                border: 1px solid rgba(148, 163, 184, 0.2);
                 border-radius: 12px;
                 padding: 12px;
-                background: #fff;
+                background: rgba(255, 255, 255, 0.9);
 
                 .restaurant-title {
                     font-weight: 600;
@@ -2007,11 +2420,11 @@ onMounted(async () => {
                 }
             }
 
-            .route-section {
-                border: 1px solid #f0f0f0;
+                .route-section {
+                border: 1px solid rgba(148, 163, 184, 0.2);
                 border-radius: 12px;
                 padding: 12px;
-                background: #fff;
+                background: rgba(255, 255, 255, 0.9);
 
                 .route-title {
                     font-weight: 600;
@@ -2049,11 +2462,29 @@ onMounted(async () => {
                     gap: 8px;
                     padding-bottom: 8px;
                     border-bottom: 1px dashed #eee;
+                    cursor: grab;
 
                     &:last-child {
                         border-bottom: none;
                         padding-bottom: 0;
                     }
+                }
+
+                .route-stop.is-dragging {
+                    opacity: 0.6;
+                }
+
+                .route-stop.is-drag-over {
+                    border-radius: 10px;
+                    background: rgba(59, 130, 246, 0.08);
+                    border-bottom-color: transparent;
+                }
+
+                .route-drag-handle {
+                    font-size: 14px;
+                    color: #64748b;
+                    cursor: grab;
+                    user-select: none;
                 }
 
                 .route-index {
@@ -2090,6 +2521,11 @@ onMounted(async () => {
         .info-card {
             margin-bottom: 16px;
 
+            &.weather-card {
+                background: linear-gradient(135deg, rgba(255, 247, 237, 0.95), rgba(239, 246, 255, 0.95));
+                border: 1px solid rgba(148, 163, 184, 0.22);
+            }
+
             .route-header {
                 display: flex;
                 align-items: center;
@@ -2107,8 +2543,9 @@ onMounted(async () => {
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    background: rgba(255, 159, 67, 0.1);
+                    background: linear-gradient(140deg, rgba(255, 154, 77, 0.25), rgba(30, 125, 217, 0.2));
                     border-radius: 50%;
+                    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
 
                     .weather-emoji {
                         font-size: 48px;
@@ -2204,6 +2641,20 @@ onMounted(async () => {
             }
         }
     }
+}
+
+.num-roll {
+    animation: numRoll 680ms cubic-bezier(.2,.9,.2,1);
+    display: inline-block;
+}
+
+@keyframes numRoll {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ringSpin {
+    to { transform: rotate(360deg); }
 }
 
 @media (max-width: 900px) {
@@ -2361,4 +2812,61 @@ onMounted(async () => {
 .food-sub{font-size:12px;color:#666}
 .food-pager{display:flex;justify-content:center;margin-top:8px}
 .drawer-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:10px}
+
+.travel-content {
+    font-family: 'Space Grotesk', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.hero-header{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;}
+.hero-title{font-size:22px;font-weight:800;color:#0f172a;letter-spacing:0.6px;}
+.hero-sub{font-size:12px;color:#64748b;margin-top:6px;}
+.hero-status{display:flex;gap:8px;flex-wrap:wrap;}
+.hero-pill{padding:4px 10px;border-radius:999px;border:1px solid rgba(148,163,184,0.35);background:rgba(255,255,255,0.7);font-size:11px;color:#334155;}
+
+.ai-hero-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:8px 0 16px;}
+.ai-card{border-radius:18px;padding:16px;background:linear-gradient(140deg, rgba(255,250,242,0.95), rgba(239,246,255,0.95));border:1px solid rgba(148,163,184,0.2);box-shadow:0 14px 26px rgba(15,23,42,0.08);animation:cockpitRise 520ms ease both;}
+.ai-food-card{background:linear-gradient(135deg, rgba(255,239,219,0.9), rgba(236,254,255,0.9));}
+.ai-trip-card{background:linear-gradient(135deg, rgba(224,231,255,0.9), rgba(255,247,237,0.9));}
+.ai-card-title{font-weight:800;font-size:16px;color:#0f172a;}
+.ai-card-sub{margin-top:8px;font-size:12px;color:#64748b;}
+.ai-card-list{display:grid;gap:6px;margin-top:8px;}
+.ai-card-item{font-size:12px;color:#0f172a;}
+.ai-card-reco{margin-top:10px;font-size:13px;color:#0f172a;font-weight:700;}
+.ai-card-note{margin-top:8px;font-size:12px;color:#475569;}
+.ai-trip-grid{display:grid;gap:8px;margin-top:10px;}
+.ai-trip-item{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:#0f172a;}
+.ai-trip-item strong{color:#111827;}
+
+.hero-strip{margin-top:6px;}
+
+.poi-focus{padding:12px;border-radius:14px;border:1px solid rgba(148,163,184,0.25);background:rgba(255,255,255,0.9);display:grid;gap:8px;}
+.poi-focus-empty{color:#64748b;font-size:12px;text-align:center;}
+.poi-focus-head{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.poi-focus-title{font-weight:700;color:#0f172a;}
+.poi-focus-distance{font-size:12px;color:#1d4ed8;font-weight:700;}
+.poi-focus-addr{font-size:12px;color:#64748b;}
+.poi-focus-tags{display:flex;flex-wrap:wrap;gap:6px;}
+.poi-tag{background:#f1f5f9;color:#0f172a;border-radius:999px;padding:2px 8px;font-size:11px;}
+.poi-focus-actions{display:flex;gap:8px;flex-wrap:wrap;}
+
+.map-card .map-layout{grid-template-columns:1.5fr 1fr;gap:18px;}
+.map-card .amap-container{height:320px;border-radius:16px;filter:saturate(0.9) contrast(1.05);}
+.map-card .map-panel{gap:12px;}
+.map-header-title{display:flex;flex-direction:column;gap:4px;}
+.map-sub{font-size:12px;color:#64748b;}
+
+.route-visual{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding:10px 12px;border-radius:12px;background:linear-gradient(120deg, rgba(224,231,255,0.7), rgba(240,253,250,0.7));border:1px solid rgba(148,163,184,0.2);}
+.route-ribbon{display:flex;align-items:center;gap:10px;}
+.route-dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid rgba(148,163,184,0.3);box-shadow:0 6px 12px rgba(15,23,42,0.12);font-size:14px;}
+.route-line{width:40px;height:4px;border-radius:999px;background:linear-gradient(90deg, #38bdf8, #f97316);}
+.route-visual-meta{font-size:12px;color:#475569;}
+
+@keyframes cockpitRise{
+    from{opacity:0;transform:translateY(12px);}
+    to{opacity:1;transform:translateY(0);}
+}
+
+@media (max-width: 980px){
+    .ai-hero-grid{grid-template-columns:1fr;}
+}
 </style>
